@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bench">
+<meta name="theme-color" content="#071630">
+<link rel="apple-touch-icon" href="/icon.png">
+<title>Bench mode</title>
+<style>
+  :root {
+    --navy0: #071630; --navy1: #0F2F5A; --navy2: #17437A;
+    --mint: #8CF5A4; --green: #2E9E5B; --sky: #9CCBFF;
+    --text: #FFFFFF; --soft: rgba(255,255,255,.75); --faint: rgba(255,255,255,.5);
+    --line: rgba(255,255,255,.12); --card: rgba(255,255,255,.06);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: linear-gradient(135deg, var(--navy0) 0%, var(--navy1) 60%, var(--navy2) 100%) fixed;
+    color: var(--text); font-family: -apple-system, system-ui, "Helvetica Neue", sans-serif;
+    -webkit-user-select: none; user-select: none; overscroll-behavior: none;
+  }
+  .wrap { min-height: 100%; padding: calc(env(safe-area-inset-top) + 18px) 22px calc(env(safe-area-inset-bottom) + 22px); display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; align-items: center; gap: 14px; }
+  .eyebrow { font-family: ui-serif, Georgia, serif; font-weight: 700; font-size: 12px; letter-spacing: .18em; color: var(--mint); }
+  .run { font-size: 18px; font-weight: 600; }
+  .grow { flex: 1; }
+  .progress { display: flex; align-items: center; gap: 10px; color: var(--soft); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bar { width: 160px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--mint), var(--sky)); transition: width .55s cubic-bezier(.25,1.12,.4,1); }
+  .link { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #B7C5D8; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--mint); }
+  .dot.off { background: #E2A34B; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 14px 9px 9px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); color: var(--soft); font-size: 14px; font-weight: 500; }
+  .chip .n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.12); font-weight: 700; font-size: 14px; }
+  .chip.cur { background: rgba(255,255,255,.14); color: var(--text); font-weight: 700; border-color: rgba(255,255,255,.3); }
+  .chip.cur .n { background: #fff; color: var(--navy1); }
+  .chip.done .n { background: var(--green); color: #fff; }
+  main { display: grid; grid-template-columns: 1fr; gap: 22px; flex: 1; }
+  @media (min-width: 900px) and (orientation: landscape) { main.withplate { grid-template-columns: minmax(0, 1fr) minmax(360px, 46%); } }
+  .steptop { display: flex; align-items: center; gap: 10px; color: var(--faint); font-family: ui-serif, Georgia, serif; font-weight: 700; font-size: 12px; letter-spacing: .18em; }
+  h1 { font-family: ui-serif, "New York", Georgia, serif; font-size: 36px; line-height: 1.1; margin: 6px 0 6px; }
+  .note { font-size: 17px; color: var(--soft); margin: 0 0 14px; }
+  .items { display: flex; flex-direction: column; gap: 10px; }
+  .item { display: flex; align-items: center; gap: 16px; padding: 15px 16px; border-radius: 16px; background: var(--card); border: 1px solid rgba(255,255,255,.08); }
+  .item.next { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.35); }
+  .box { flex: none; width: 40px; height: 40px; border-radius: 10px; border: 2px solid rgba(255,255,255,.4); display: grid; place-items: center; transition: background .3s cubic-bezier(.34,1.7,.5,1), border-color .3s; }
+  .item.next .box { border-color: rgba(255,255,255,.85); }
+  .item.ticked .box { background: var(--green); border-color: var(--mint); }
+  .box svg { width: 22px; height: 22px; opacity: 0; transform: scale(.2); transition: transform .42s cubic-bezier(.34,1.7,.5,1), opacity .2s; }
+  .item.ticked .box svg { opacity: 1; transform: scale(1); }
+  .t { font-size: 21px; font-weight: 600; }
+  .d { font-size: 16px; color: var(--soft); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .item.ticked .t { color: rgba(255,255,255,.45); text-decoration: line-through; text-decoration-color: rgba(255,255,255,.4); }
+  .item.ticked .d { color: rgba(255,255,255,.35); }
+  .tag { flex: none; font-size: 12px; font-weight: 700; color: var(--navy0); background: var(--mint); padding: 3px 9px; border-radius: 999px; }
+  .plate { background: #fff; border-radius: 18px; padding: 14px; align-self: start; position: sticky; top: 14px; }
+  .plate.inline { position: static; margin: 0 0 16px; max-width: 560px; }
+  .plate h3 { margin: 0 0 8px; color: #1E4A83; font-family: ui-serif, Georgia, serif; font-size: 13px; letter-spacing: .16em; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .legend span { font-size: 12px; font-weight: 700; color: #fff; padding: 3px 9px; border-radius: 999px; }
+  .plate svg { width: 100%; height: auto; display: block; }
+  .focus { margin-top: 10px; font-size: 18px; font-weight: 700; color: #1E7A47; }
+  nav { display: flex; gap: 12px; padding-top: 6px; }
+  button { font: inherit; font-size: 18px; font-weight: 700; border: 0; border-radius: 999px; padding: 14px 26px; color: #fff; background: rgba(255,255,255,.12); }
+  button.go { background: var(--mint); color: var(--navy0); }
+  button:disabled { opacity: .35; }
+  button.small { font-size: 14px; padding: 9px 14px; font-weight: 600; color: var(--soft); background: transparent; }
+  .empty { margin-top: 80px; text-align: center; color: var(--soft); font-size: 20px; }
+  /* Bench mode's motion, as on the Mac: a press squishes a line or button a little; a new step slides
+     in from the right while the old one fades; ticks spring in; the count rolls. */
+  .item, button, .chip { transition: transform .22s cubic-bezier(.3,1.45,.55,1), filter .22s ease, background .2s, border-color .2s; }
+  .item:active, button:active:not(:disabled), .chip:active { transform: scale(.955); filter: brightness(.965); }
+  main { position: relative; }
+  .stage { display: contents; }
+  .enter { animation: enter .5s cubic-bezier(.2,.9,.25,1) both; }
+  .leave { position: absolute; inset: 0; pointer-events: none; animation: leave .3s ease forwards; }
+  @keyframes enter { from { transform: translateX(45vw); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes leave { to { opacity: 0; } }
+  .roll { display: inline-flex; }
+  .dg { display: inline-block; height: 1.2em; overflow: hidden; vertical-align: bottom; }
+  .dg > span { display: flex; flex-direction: column; transition: transform .5s cubic-bezier(.3,1.25,.45,1); }
+  .dg > span > b { display: block; height: 1.2em; line-height: 1.2em; font-weight: inherit; }
+  body.still *, body.still *::before, body.still *::after { transition: none !important; animation: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">BENCH MODE</div>
+      <div class="run" id="run">Connecting…</div>
+    </div>
+    <div class="grow"></div>
+    <div class="progress"><div class="bar"><i id="bar"></i></div><span><span class="roll" id="count"></span> of <span id="total">0</span></span></div>
+    <div class="link"><span class="dot" id="dot"></span><span id="linktext">Mac</span></div>
+    <button class="small" id="reset">Start over</button>
+  </header>
+  <div class="chips" id="chips"></div>
+  <main id="main"><div class="empty">Looking for the Mac…</div></main>
+</div>
+<script>
+const key = new URLSearchParams(location.search).get("k") || "";
+const store = "bench-" + key;
+let state = null, lastText = "", pending = {}, online = false, advanceTimer = null;
+
+try { const saved = JSON.parse(localStorage.getItem(store) || "null"); if (saved) { state = saved.state; pending = saved.pending || {}; } } catch (e) {}
+
+function save() { try { localStorage.setItem(store, JSON.stringify({ state, pending })); } catch (e) {} }
+function done(id) { return id in pending ? pending[id] : state.done.includes(id); }
+
+async function call(path, body) {
+  const r = await fetch(path + "?k=" + encodeURIComponent(key), body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error(r.status);
+  return r.text();
+}
+
+function take(text) {
+  online = true;
+  if (text === lastText) return status();
+  lastText = text;
+  const s = JSON.parse(text);
+  // ticks waiting to be sent win over the Mac's copy until they arrive
+  for (const id of Object.keys(pending)) if (s.done.includes(id) === pending[id]) delete pending[id];
+  state = s; save(); render();
+}
+
+async function poll() {
+  try {
+    for (const [id, on] of Object.entries(pending)) take(await call("/tick", { id, done: on }));
+    take(await call("/state"));
+  } catch (e) { online = false; status(); }
+}
+
+function status() {
+  document.getElementById("dot").className = "dot " + (online ? "on" : "off");
+  document.getElementById("linktext").textContent = online ? "Mac" : (Object.keys(pending).length ? "offline · ticks kept" : "offline");
+}
+
+function tick(id) {
+  const on = !done(id);
+  pending[id] = on; save(); render();
+  const step = state.steps[state.step];
+  if (on && step.items.every(i => done(i.id)) && state.step < state.steps.length - 1) {
+    clearTimeout(advanceTimer);
+    advanceTimer = setTimeout(() => go(state.step + 1, true), 700);
+  }
+  call("/tick", { id, done: on }).then(take).catch(() => { online = false; status(); });
+}
+
+function go(n, auto) {
+  if (!state || n < 0 || n >= state.steps.length) return;
+  state.step = n; save(); render();
+  window.scrollTo({ top: 0, behavior: still() ? "auto" : "smooth" });
+  call("/step", { step: n }).then(take).catch(() => {});
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function dark(hex) { const v = parseInt(hex, 16); const r = v >> 16 & 255, g = v >> 8 & 255, b = v & 255; return (0.299 * r + 0.587 * g + 0.114 * b) < 150; }
+
+function plateSVG(plate, picked) {
+  const p = 30, x0 = 30, y0 = 26;
+  const colors = {}; for (const w of plate.wells) colors[w.i] = w.color;
+  let s = `<svg viewBox="0 0 ${x0 + 12 * p + 8} ${y0 + 8 * p + 8}" xmlns="http://www.w3.org/2000/svg">`;
+  s += `<rect x="${x0 - 6}" y="${y0 - 6}" width="${12 * p + 12}" height="${8 * p + 12}" rx="10" fill="#F3F6FA" stroke="#D3DDEA"/>`;
+  for (let c = 0; c < 12; c++) s += `<text x="${x0 + c * p + p / 2}" y="${y0 - 11}" font-size="10" font-weight="700" fill="#6B7A90" text-anchor="middle" font-family="-apple-system">${c + 1}</text>`;
+  for (let r = 0; r < 8; r++) s += `<text x="${x0 - 15}" y="${y0 + r * p + p / 2 + 4}" font-size="11" font-weight="800" fill="#1E4A83" text-anchor="middle" font-family="Georgia">${"ABCDEFGH"[r]}</text>`;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 12; c++) {
+    const i = r * 12 + c, cx = x0 + c * p + p / 2, cy = y0 + r * p + p / 2, col = colors[i];
+    const on = picked && picked.has(i);
+    if (on) s += `<circle cx="${cx}" cy="${cy}" r="${p * 0.55}" fill="#8CF5A4" opacity=".55"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="${p * 0.38}" fill="${col ? "#" + col : "#E3E9F2"}" stroke="${col ? "rgba(0,0,0,.25)" : "#C9D4E3"}" opacity="${col && picked && !on ? 0.18 : 1}"/>`;
+    if (col && (!picked || on)) s += `<ellipse cx="${cx - 3}" cy="${cy - 4}" rx="4" ry="2.4" fill="#fff" opacity=".5"/>`;
+    if (on) s += `<circle cx="${cx}" cy="${cy}" r="${p * 0.44}" fill="none" stroke="#2E9E5B" stroke-width="2"/>`;
+  }
+  return s + "</svg>";
+}
+
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+function still() { return reduced.matches || (state && state.motion === false); }
+
+/// Digits that roll to their new value, like the Mac's count.
+function roll(el, value) {
+  const digits = String(value).split("");
+  if (el.children.length !== digits.length) {
+    el.innerHTML = digits.map(() => `<span class="dg"><span>${[0,1,2,3,4,5,6,7,8,9].map(d => `<b>${d}</b>`).join("")}</span></span>`).join("");
+  }
+  digits.forEach((d, i) => { el.children[i].firstChild.style.transform = `translateY(${-1.2 * +d}em)`; });
+}
+
+let shown = null;   // what the stage holds: step, its lines and where the plate sits
+
+function stageHTML(step, cur, count, wide, plate, plateHTML, next) {
+  const check = `<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  let html = `<section><div class="steptop">STEP ${cur + 1} OF ${count}</div><h1>${esc(step.title)}</h1><p class="note">${esc(step.note)}</p>`;
+  // upright, the plate sits above the list so the wells to fill stay in view
+  if (plate && !wide) html += `<div class="plate inline">${plateHTML}</div>`;
+  html += `<div class="items">`;
+  for (const it of step.items) {
+    const t = done(it.id), n = next && it.id === next.id;
+    html += `<div class="item ${t ? "ticked" : ""} ${n ? "next" : ""}" data-id="${esc(it.id)}"><div class="box">${check}</div><div class="grow"><div class="t">${esc(it.title)}</div><div class="d">${esc(it.detail)}</div></div><span class="tag" ${n ? "" : "hidden"}>next</span></div>`;
+  }
+  html += `</div><nav><button id="back" ${cur === 0 ? "disabled" : ""}>‹ Back</button><button class="go" id="fwd">${cur === count - 1 ? "All done ✓" : "Next step ›"}</button></nav></section>`;
+  if (plate && wide) html += `<aside class="plate">${plateHTML}</aside>`;
+  return html;
+}
+
+function render() {
+  document.body.classList.toggle("still", !!still());
+  const main = document.getElementById("main");
+  if (!state || !state.steps || !state.steps.length) {
+    main.innerHTML = `<div class="empty">${state ? "Add samples and primers to the protocol on the Mac." : "Looking for the Mac…"}</div>`;
+    shown = null;
+    return status();
+  }
+  const steps = state.steps, cur = Math.min(state.step, steps.length - 1), step = steps[cur];
+  const total = steps.reduce((n, s) => n + s.items.length, 0);
+  const ticked = steps.reduce((n, s) => n + s.items.filter(i => done(i.id)).length, 0);
+  document.getElementById("run").textContent = state.title;
+  roll(document.getElementById("count"), ticked);
+  document.getElementById("total").textContent = total;
+  document.getElementById("bar").style.width = (total ? 100 * ticked / total : 0) + "%";
+  document.getElementById("chips").innerHTML = steps.map((s, i) => {
+    const left = s.items.filter(it => !done(it.id)).length;
+    return `<div class="chip ${i === cur ? "cur" : ""} ${left === 0 ? "done" : ""}" data-step="${i}"><span class="n">${left === 0 ? "✓" : i + 1}</span>${esc(s.title)}</div>`;
+  }).join("");
+  const next = step.items.find(i => !done(i.id));
+  const focus = next || step.items[step.items.length - 1];
+  const plate = focus && focus.plate != null ? state.plates[focus.plate] : null;
+  const wide = window.matchMedia("(min-width: 900px) and (orientation: landscape)").matches;
+  const plateHTML = plate ? `<h3>${state.plates.length > 1 ? "PLATE " + plate.number : "THE PLATE"}</h3><div class="legend">` +
+      plate.primers.map(pr => `<span style="background:#${pr.color};color:${dark(pr.color) ? "#fff" : "#172033"}">${esc(pr.name)}${pr.ref ? " · ref" : ""}</span>`).join("") +
+      `</div>${plateSVG(plate, new Set(focus.wells || []))}<div class="focus">${esc(focus.detail)}</div>` : "";
+  const sig = [cur, step.items.map(i => i.id + "|" + i.title + "|" + i.detail).join(";"), !!plate, wide].join("§");
+
+  if (shown && shown.sig === sig) {
+    // the same step: tick lines in place, so the tick mark springs in as it does on the Mac
+    main.querySelectorAll(".stage:not(.leave) .item").forEach(el => {
+      const id = el.dataset.id, n = next && id === next.id;
+      el.classList.toggle("ticked", done(id));
+      el.classList.toggle("next", !!n);
+      el.querySelector(".tag").hidden = !n;
+    });
+    const p = main.querySelector(".stage:not(.leave) .plate");
+    if (p && p.dataset.focus !== (focus && focus.id)) { p.innerHTML = plateHTML; p.dataset.focus = focus.id; }
+  } else {
+    // a new step slides in from the right while the old one fades, as on the Mac
+    const moving = shown && shown.cur !== cur && !still();
+    main.querySelectorAll(".stage.leave, .empty").forEach(el => el.remove());
+    const old = main.querySelector(".stage");
+    if (old) {
+      if (moving) {
+        // the old step keeps its layout while it fades
+        const g = getComputedStyle(main);
+        old.style.display = "grid"; old.style.gridTemplateColumns = g.gridTemplateColumns; old.style.gap = g.gap;
+        old.classList.add("leave");
+        setTimeout(() => old.remove(), 320);
+      } else old.remove();
+    }
+    const stage = document.createElement("div");
+    stage.className = "stage";
+    stage.innerHTML = stageHTML(step, cur, steps.length, wide, plate, plateHTML, next);
+    main.appendChild(stage);
+    if (moving) [...stage.children].forEach(el => el.classList.add("enter"));
+    const p = stage.querySelector(".plate");
+    if (p) p.dataset.focus = focus.id;
+    shown = { sig, cur };
+  }
+  main.className = plate && wide ? "withplate" : "";
+  status();
+}
+
+document.addEventListener("click", e => {
+  const item = e.target.closest(".item"); if (item) return tick(item.dataset.id);
+  const chip = e.target.closest(".chip"); if (chip) return go(+chip.dataset.step);
+  if (e.target.id === "back") return go(state.step - 1);
+  if (e.target.id === "fwd") { if (state.step < state.steps.length - 1) go(state.step + 1); return; }
+  if (e.target.id === "reset" && confirm("Clear every tick and start again?")) { pending = {}; call("/reset", {}).then(take).catch(() => {}); }
+});
+
+render();
+poll();
+setInterval(poll, 1500);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+window.matchMedia("(orientation: landscape)").addEventListener("change", render);
+window.addEventListener("resize", () => { clearTimeout(window._r); window._r = setTimeout(render, 150); });
+</script>
+</body>
+</html>

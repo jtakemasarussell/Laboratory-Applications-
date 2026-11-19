@@ -1,0 +1,16 @@
+# Build output (made by build.sh)
+build/
+*.app/
+
+# Release files: attach these to a GitHub Release instead of committing them
+*.dmg
+*.zip
+
+# Lab data and outputs
+*.xlsx
+*.iccplate
+
+# macOS
+.DS_Store
+release/
+*.qpcrdata
