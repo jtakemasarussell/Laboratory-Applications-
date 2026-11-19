@@ -360,6 +360,14 @@ final class StainingPreviewView: AmbientLayerView {
 
     /// Pictures already drawn for a hologram, by stain look and size: picking a stain again shows at once.
     private static var holoCache: [String: [CGImage?]] = [:]
+    /// The scope's frame, scan lines and laser lines are the same for every stain: drawn once per size.
+    private static var holoParts: [String: CGImage?] = [:]
+    private static func part(_ key: String, _ make: () -> CGImage?) -> CGImage? {
+        if let i = holoParts[key] { return i }
+        let i = make()
+        holoParts[key] = i
+        return i
+    }
 
     /// The hologram: a round scope with the cells, the channels drawn by the laser line, and the merge.
     private func buildHologram(_ info: PreviewInfo) {
@@ -377,11 +385,11 @@ final class StainingPreviewView: AmbientLayerView {
         stepX = Array(repeating: 0, count: 6)
         let fsize = CGSize(width: D, height: D)
         for l in [fovBack, phase, perm, haze, darkness, merge] { l.frame = CGRect(origin: .zero, size: fsize) }
-        fovBack.contents = renderImage(fsize, screenScale) { c in
+        fovBack.contents = Self.part("back\(Int(D))") { renderImage(fsize, screenScale) { c in
             let space = CGColorSpace(name: CGColorSpace.sRGB)!
             if let g = CGGradient(colorsSpace: space, colors: [cg("0B3550", 0.5), cg("04172A", 0.62)] as CFArray, locations: [0, 1]) {
                 c.drawRadialGradient(g, startCenter: CGPoint(x: D / 2, y: D / 2), startRadius: 0, endCenter: CGPoint(x: D / 2, y: D / 2), endRadius: D / 2, options: [])
-            }
+            } }
         }
         for l in [phase, perm, haze] { l.contents = nil; l.opacity = 0 }
         darkness.backgroundColor = cg("03111F", 0.5)
@@ -422,13 +430,13 @@ final class StainingPreviewView: AmbientLayerView {
         mergeMask.frame = CGRect(x: 0, y: 0, width: D, height: D)
         merge.mask = mergeMask
         func line(_ hex: String) -> CGImage? {
-            renderImage(CGSize(width: D, height: 18), screenScale) { c in
+            Self.part("line\(hex)\(Int(D))") { renderImage(CGSize(width: D, height: 18), screenScale) { c in
                 let space = CGColorSpace(name: CGColorSpace.sRGB)!
                 if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0), cg(hex, 0.6), cg(hex, 0)] as CFArray, locations: [0, 0.5, 1]) {
                     c.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: 18), options: [])
                 }
                 c.setFillColor(NSColor(white: 1, alpha: 0.9).cgColor); c.fill(CGRect(x: 0, y: 8.3, width: D, height: 1.4))
-            }
+            } }
         }
         scanImages = info.channels.map { line($0.fluor.hex) }
         scanWhite = line("FFFFFF")
@@ -440,7 +448,7 @@ final class StainingPreviewView: AmbientLayerView {
         // the hologram itself: scan lines across the image, a cyan rim with a glow
         holo.removeFromSuperlayer(); stage.addSublayer(holo)
         holo.frame = bounds
-        holo.contents = renderImage(bounds.size, screenScale) { c in
+        holo.contents = Self.part("holo\(Int(bounds.width))x\(Int(bounds.height))") { renderImage(bounds.size, screenScale) { c in
             let space = CGColorSpace(name: CGColorSpace.sRGB)!
             let ctr = CGPoint(x: fovTD.midX, y: fovTD.midY)
             c.saveGState(); c.addEllipse(in: fovTD); c.clip()
@@ -463,7 +471,7 @@ final class StainingPreviewView: AmbientLayerView {
             c.setStrokeColor(NSColor(white: 1, alpha: 0.85).cgColor); c.setLineWidth(2)
             c.strokeLineSegments(between: [CGPoint(x: sx - 24, y: sy), CGPoint(x: sx, y: sy)])
             drawText("20 µm", CGPoint(x: sx - 12, y: sy + 3), 7.5, NSColor(white: 1, alpha: 0.8), weight: .semibold, center: true)
-        }
+        } }
         ring.contents = nil
 
         func text(_ t: CATextLayer, _ y: CGFloat, _ size: CGFloat, mono: Bool) {
@@ -612,7 +620,13 @@ final class StainingPreviewView: AmbientLayerView {
             else { let h = hash01(i, 50 + j * 13); level = h < 0.25 ? 0.08 : 0.45 + 0.55 * hash01(i, 60 + j) }
             let a = CGFloat(level)
             c.saveGState()
-            c.setShadow(offset: .zero, blur: 9, color: color.withAlphaComponent(0.85 * a).cgColor)
+            if hologram {
+                // a soft halo instead of a blurred shadow: far cheaper to draw, and the small scope looks the same
+                c.addPath(ellipsePath(cell, grow: 3.5)); c.setFillColor(color.withAlphaComponent(0.16 * a).cgColor); c.fillPath()
+                c.addPath(ellipsePath(cell, grow: 1.6)); c.setFillColor(color.withAlphaComponent(0.14 * a).cgColor); c.fillPath()
+            } else {
+                c.setShadow(offset: .zero, blur: 9, color: color.withAlphaComponent(0.85 * a).cgColor)
+            }
             let nrect = CGRect(x: cell.nucleus.x - cell.nr, y: cell.nucleus.y - cell.nr * 0.85, width: cell.nr * 2, height: cell.nr * 1.7)
             switch (ch.fluor.counterstain ? .nuclear : ch.localisation) {
             case .nuclear:

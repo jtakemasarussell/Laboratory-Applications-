@@ -251,36 +251,7 @@ final class ExportScanView: AmbientLayerView {
                 }
             }
             drawText(name, CGPoint(x: 30, y: 48), 13, .white, weight: .semibold)
-            // the stage insert
-            c.setFillColor(cg("1A2A40")); c.fill(plateRect.insetBy(dx: -14, dy: -14))
-            c.setStrokeColor(cg("33496A")); c.setLineWidth(1); c.stroke(plateRect.insetBy(dx: -14, dy: -14))
-            // the plate: white polymer, A1 corner cut
-            let p = CGMutablePath(), r = plateRect, cut: CGFloat = 14, rad: CGFloat = 10
-            p.move(to: CGPoint(x: r.minX + cut, y: r.minY))
-            p.addLine(to: CGPoint(x: r.maxX - rad, y: r.minY))
-            p.addArc(tangent1End: CGPoint(x: r.maxX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.maxY), radius: rad)
-            p.addArc(tangent1End: CGPoint(x: r.maxX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.maxY), radius: rad)
-            p.addArc(tangent1End: CGPoint(x: r.minX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.minY), radius: rad)
-            p.addLine(to: CGPoint(x: r.minX, y: r.minY + cut))
-            p.closeSubpath()
-            c.saveGState(); c.addPath(p); c.clip()
-            if let g = CGGradient(colorsSpace: space, colors: [cg("E9EEF5"), cg("C9D3E0")] as CFArray, locations: [0, 1]) {
-                c.drawLinearGradient(g, start: CGPoint(x: 0, y: r.minY), end: CGPoint(x: 0, y: r.maxY), options: [])
-            }
-            c.restoreGState()
-            c.addPath(p); c.setStrokeColor(cg("FFFFFF", 0.8)); c.setLineWidth(1.2); c.strokePath()
-            for j in 0..<12 { drawText("\(j + 1)", CGPoint(x: self.origin.x + (CGFloat(j) + 0.5) * self.pitch, y: self.origin.y - 20), 9, NSColor(hex: "5E7290"), weight: .bold, center: true) }
-            for i in 0..<8 { drawText(rowLetters[i], CGPoint(x: self.origin.x - 16, y: self.origin.y + (CGFloat(i) + 0.5) * self.pitch - 6), 9, NSColor(hex: "5E7290"), weight: .bold, center: true) }
-            let stained = Dictionary(uniqueKeysWithValues: self.wells.map { ($0.index, $0.fill) })
-            for w in 0..<96 {
-                let ctr = self.center(w), s = self.pitch - 6
-                let cell = CGRect(x: ctr.x - s / 2, y: ctr.y - s / 2, width: s, height: s)
-                let path = CGPath(roundedRect: cell, cornerWidth: 5, cornerHeight: 5, transform: nil)
-                c.addPath(path)
-                c.setFillColor(stained[w].map { cg($0, 0.55) } ?? cg("DCE4EE"))
-                c.fillPath()
-                c.addPath(path); c.setStrokeColor(cg("8EA2BC")); c.setLineWidth(1); c.strokePath()
-            }
+            self.drawStageAndPlate(c, plateRect)
             // the right-hand panel
             let px = W - 300
             c.setFillColor(cg("FFFFFF", 0.04)); c.fill(CGRect(x: px - 20, y: 0, width: 320, height: H))
@@ -294,7 +265,7 @@ final class ExportScanView: AmbientLayerView {
         lit = wells.map { w in
             let img = glows[w.glow] ?? renderImage(CGSize(width: pitch * 1.8, height: pitch * 1.8), screenScale) { c in
                 let space = CGColorSpace(name: CGColorSpace.sRGB)!, m = self.pitch * 0.9
-                if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.95), cg(w.glow, 0.9), cg(w.glow, 0)] as CFArray, locations: [0, 0.32, 1]) {
+                if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.9), cg(w.glow, 0.85), cg(w.glow, 0.18), cg(w.glow, 0)] as CFArray, locations: [0, 0.22, 0.5, 1]) {
                     c.drawRadialGradient(g, startCenter: CGPoint(x: m, y: m), startRadius: 0, endCenter: CGPoint(x: m, y: m), endRadius: m, options: [])
                 }
             }
@@ -346,6 +317,129 @@ final class ExportScanView: AmbientLayerView {
         scope.hologram = true
         scope.frame = CGRect(x: px + 30, y: bounds.height - 118 - 210, width: 210, height: 210)   // the window's coordinates
         show(0)
+    }
+
+    /// A brushed-metal stage insert with two spring clips, holding a black ibidi-style plate: bevelled
+    /// polymer with the A1 corner cut, moulded labels, square wells with lit walls and glass bottoms;
+    /// stained wells hold tinted liquid with a meniscus.
+    private func drawStageAndPlate(_ c: CGContext, _ r: CGRect) {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        func lin(_ hexes: [(String, CGFloat)], _ a: CGPoint, _ b: CGPoint) {
+            if let g = CGGradient(colorsSpace: space, colors: hexes.map { cg($0.0, $0.1) } as CFArray, locations: nil) {
+                c.drawLinearGradient(g, start: a, end: b, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+        }
+        // the stage: brushed aluminium round a darker opening
+        let stage = r.insetBy(dx: -26, dy: -26)
+        let stagePath = CGPath(roundedRect: stage, cornerWidth: 12, cornerHeight: 12, transform: nil)
+        c.saveGState()
+        c.setShadow(offset: CGSize(width: 0, height: 10), blur: 24, color: cg("000000", 0.6))
+        c.addPath(stagePath); c.setFillColor(cg("8F9AA8")); c.fillPath()
+        c.restoreGState()
+        c.saveGState(); c.addPath(stagePath); c.clip()
+        lin([("C9D1DB", 1), ("97A2B0", 1), ("B6BFCA", 1), ("7E8999", 1)], CGPoint(x: stage.minX, y: stage.minY), CGPoint(x: stage.maxX, y: stage.maxY))
+        var y = stage.minY
+        while y < stage.maxY {                                   // the brushing
+            c.setFillColor(cg(Int(y) % 4 == 0 ? "FFFFFF" : "000000", 0.035))
+            c.fill(CGRect(x: stage.minX, y: y, width: stage.width, height: 1))
+            y += 2
+        }
+        c.restoreGState()
+        c.addPath(stagePath); c.setStrokeColor(cg("FFFFFF", 0.35)); c.setLineWidth(1); c.strokePath()
+        let opening = r.insetBy(dx: -6, dy: -6)
+        c.addPath(CGPath(roundedRect: opening, cornerWidth: 8, cornerHeight: 8, transform: nil))
+        c.setFillColor(cg("0B121C")); c.fillPath()
+
+        // the plate outline, A1 corner cut
+        let p = CGMutablePath(), cut: CGFloat = 14, rad: CGFloat = 9
+        p.move(to: CGPoint(x: r.minX + cut, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX - rad, y: r.minY))
+        p.addArc(tangent1End: CGPoint(x: r.maxX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.maxY), radius: rad)
+        p.addArc(tangent1End: CGPoint(x: r.maxX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.maxY), radius: rad)
+        p.addArc(tangent1End: CGPoint(x: r.minX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.minY), radius: rad)
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + cut))
+        p.closeSubpath()
+        // its shadow on the stage, then the black polymer
+        c.saveGState()
+        c.setShadow(offset: CGSize(width: 0, height: 5), blur: 12, color: cg("000000", 0.75))
+        c.addPath(p); c.setFillColor(cg("1A1F27")); c.fillPath()
+        c.restoreGState()
+        c.saveGState(); c.addPath(p); c.clip()
+        lin([("3A424E", 1), ("20262F", 1), ("15191F", 1)], CGPoint(x: 0, y: r.minY), CGPoint(x: 0, y: r.maxY))
+        // a soft sheen across the top
+        lin([("FFFFFF", 0.10), ("FFFFFF", 0)], CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.minX + r.width * 0.35, y: r.minY + r.height * 0.5))
+        c.restoreGState()
+        // the bevel: a lit outer edge, a dark groove just inside
+        c.addPath(p); c.setStrokeColor(cg("FFFFFF", 0.22)); c.setLineWidth(1.3); c.strokePath()
+        let inner = r.insetBy(dx: 7, dy: 7)
+        let ip = CGMutablePath()
+        ip.move(to: CGPoint(x: inner.minX + cut - 4, y: inner.minY))
+        ip.addLine(to: CGPoint(x: inner.maxX - 5, y: inner.minY))
+        ip.addArc(tangent1End: CGPoint(x: inner.maxX, y: inner.minY), tangent2End: CGPoint(x: inner.maxX, y: inner.maxY), radius: 5)
+        ip.addArc(tangent1End: CGPoint(x: inner.maxX, y: inner.maxY), tangent2End: CGPoint(x: inner.minX, y: inner.maxY), radius: 5)
+        ip.addArc(tangent1End: CGPoint(x: inner.minX, y: inner.maxY), tangent2End: CGPoint(x: inner.minX, y: inner.minY), radius: 5)
+        ip.addLine(to: CGPoint(x: inner.minX, y: inner.minY + cut - 4))
+        ip.closeSubpath()
+        c.addPath(ip); c.setStrokeColor(cg("000000", 0.55)); c.setLineWidth(1.4); c.strokePath()
+        c.saveGState(); c.translateBy(x: 0.8, y: 0.8)
+        c.addPath(ip); c.setStrokeColor(cg("FFFFFF", 0.07)); c.setLineWidth(1); c.strokePath()
+        c.restoreGState()
+
+        // moulded labels
+        let label = NSColor(hex: "8C98A8")
+        for j in 0..<12 { drawText("\(j + 1)", CGPoint(x: origin.x + (CGFloat(j) + 0.5) * pitch, y: origin.y - 20), 8.5, label, weight: .semibold, center: true) }
+        for i in 0..<8 { drawText(rowLetters[i], CGPoint(x: origin.x - 15, y: origin.y + (CGFloat(i) + 0.5) * pitch - 6), 8.5, label, weight: .semibold, center: true) }
+        drawText("µ-Plate · 96 Well", CGPoint(x: r.maxX - 12, y: r.maxY - 15), 7.5, NSColor(hex: "6E7A8A"), weight: .semibold, right: true, tracking: 0.6)
+
+        // the wells
+        let stained = Dictionary(uniqueKeysWithValues: wells.map { ($0.index, $0.fill) })
+        let s = pitch - 5
+        for w in 0..<96 {
+            let ctr = center(w)
+            let rim = CGRect(x: ctr.x - s / 2, y: ctr.y - s / 2, width: s, height: s)
+            let rimPath = CGPath(roundedRect: rim, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+            // the walls: lit along the top, in shade at the bottom
+            c.saveGState(); c.addPath(rimPath); c.clip()
+            lin([("6B7685", 1), ("3A434F", 1), ("232A33", 1)], CGPoint(x: 0, y: rim.minY), CGPoint(x: 0, y: rim.maxY))
+            c.restoreGState()
+            // the glass bottom
+            let floor = rim.insetBy(dx: 3, dy: 3)
+            let floorPath = CGPath(roundedRect: floor, cornerWidth: 3, cornerHeight: 3, transform: nil)
+            c.saveGState(); c.addPath(floorPath); c.clip()
+            lin([("071019", 1), ("0F1C2C", 1), ("16283D", 1)], CGPoint(x: floor.minX, y: floor.minY), CGPoint(x: floor.maxX, y: floor.maxY))
+            if let fill = stained[w] {
+                // the stain in the well, a little brighter in the middle, darker where it meets the wall
+                c.setFillColor(cg(fill, 0.42)); c.fill(floor)
+                if let g = CGGradient(colorsSpace: space, colors: [cg(fill, 0.35), cg(fill, 0)] as CFArray, locations: [0, 1]) {
+                    c.drawRadialGradient(g, startCenter: CGPoint(x: floor.midX, y: floor.midY), startRadius: 0,
+                                         endCenter: CGPoint(x: floor.midX, y: floor.midY), endRadius: floor.width * 0.6, options: [])
+                }
+            }
+            // a reflection on the glass
+            lin([("FFFFFF", 0.13), ("FFFFFF", 0)], CGPoint(x: floor.minX, y: floor.minY), CGPoint(x: floor.minX + floor.width * 0.55, y: floor.minY + floor.height * 0.55))
+            c.restoreGState()
+            if let fill = stained[w] {
+                c.addPath(floorPath); c.setStrokeColor(cg(fill, 0.75)); c.setLineWidth(1); c.strokePath()     // the meniscus
+            } else {
+                c.addPath(floorPath); c.setStrokeColor(cg("000000", 0.6)); c.setLineWidth(0.8); c.strokePath()
+            }
+            // the rim's top edge catching the light
+            c.addPath(rimPath); c.setStrokeColor(cg("FFFFFF", 0.10)); c.setLineWidth(0.8); c.strokePath()
+        }
+
+        // two spring clips holding the plate
+        for x in [r.minX - 18, r.maxX + 4] {
+            let clip = CGRect(x: x, y: r.midY - 22, width: 14, height: 44)
+            let cp = CGPath(roundedRect: clip, cornerWidth: 4, cornerHeight: 4, transform: nil)
+            c.saveGState()
+            c.setShadow(offset: CGSize(width: 0, height: 2), blur: 4, color: cg("000000", 0.5))
+            c.addPath(cp); c.setFillColor(cg("A9B3C0")); c.fillPath()
+            c.restoreGState()
+            c.saveGState(); c.addPath(cp); c.clip()
+            lin([("E4E9EF", 1), ("9DA8B6", 1), ("C4CCD6", 1)], CGPoint(x: clip.minX, y: 0), CGPoint(x: clip.maxX, y: 0))
+            c.restoreGState()
+            c.setFillColor(cg("5B6676")); c.fillEllipse(in: CGRect(x: clip.midX - 2.5, y: clip.midY - 2.5, width: 5, height: 5))
+        }
     }
 
     func start() {
