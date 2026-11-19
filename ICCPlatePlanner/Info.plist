@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>ICC Plate Planner</string>
+	<key>CFBundleExecutable</key>
+	<string>ICC Plate Planner</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>lab.icc.plateplanner</string>
+	<key>CFBundleName</key>
+	<string>ICC Plate Planner</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.4.0</string>
+	<key>CFBundleVersion</key>
+	<string>7</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Created by Joey Russell. Department of Regenerative Medicine Research, Kobe City Medical Center General Hospital.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>ICC Plate Planner plate</string>
+			<key>UTTypeIdentifier</key>
+			<string>lab.icc.plate</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>iccplate</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>UpdateRepository</key>
+	<string>jtakemasarussell/Laboratory-Applications-</string>
+	<key>UpdateTagPrefix</key>
+	<string>icc-v</string>
+</dict>
+</plist>
