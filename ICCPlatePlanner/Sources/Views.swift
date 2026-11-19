@@ -1003,10 +1003,7 @@ struct PanelStrip: View {
                         if let sname = c.secondary {
                             Text(sname).font(.system(size: 11.5, weight: .semibold)).foregroundColor(Brand.ink)
                                 .help(c.secondaryFacts ?? sname)
-                            if let f = c.fluor {
-                                Circle().fill(Color(hex: f.hex)).frame(width: 7, height: 7)
-                                    .shadow(color: Color(hex: f.hex).opacity(0.9), radius: 2.5)
-                            }
+                            if let f = c.fluor { DyeTag(fluor: f) }
                         } else {
                             Text("no secondary").font(.system(size: 11.5, weight: .semibold)).foregroundColor(Color(hex: "C2362B"))
                         }
@@ -1025,7 +1022,7 @@ struct PanelStrip: View {
                     HStack(spacing: 6) {
                         VerdictIcon(verdict: .ok, why: "\(ch.secondary) stains every nucleus", size: 11.5)
                         Text(ch.secondary).font(.system(size: 11.5, weight: .semibold))
-                        Circle().fill(Color(hex: ch.fluor.hex)).frame(width: 7, height: 7)
+                        DyeTag(fluor: ch.fluor)
                         Text("every nucleus").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
@@ -1160,5 +1157,24 @@ struct FlowLayout: Layout {
             x += s.width + spacing
             row = max(row, s.height)
         }
+    }
+}
+
+
+/// The secondary's dye as a small labelled tag ("594", "DAPI") in the channel's colour, so it reads
+/// as the dye and not as a check result.
+struct DyeTag: View {
+    let fluor: Fluor
+    var body: some View {
+        let c = Color(hex: fluor.hex)
+        let label = fluor.name
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 1.5).fill(c).frame(width: 3, height: 9)
+            Text(label).font(.system(size: 9.5, weight: .semibold).monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 5).padding(.vertical, 1.5)
+        .background(RoundedRectangle(cornerRadius: 4).fill(c.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(c.opacity(0.35), lineWidth: 0.75))
+        .help("Dye: \(fluor.name) (\(fluor.wavelength) nm channel). This shows the colour, not a check result.")
     }
 }
