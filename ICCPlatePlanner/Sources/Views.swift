@@ -830,9 +830,9 @@ struct PlateSection: View {
                     .background(
                         // the raised deck the wells sit in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(LinearGradient(colors: [Color(hex: "F9FBFE"), Color(hex: "E8EEF6")], startPoint: .top, endPoint: .bottom))
+                            .fill(LinearGradient(colors: [Color(hex: "1C222B"), Color(hex: "14181F")], startPoint: .top, endPoint: .bottom))
                             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(LinearGradient(colors: [.white, Color(hex: "B7C6DA")], startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
+                                .strokeBorder(LinearGradient(colors: [.white.opacity(0.14), .black.opacity(0.4)], startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
                             .padding(-4)
                     )
             }
@@ -910,8 +910,11 @@ struct WellCell: View, Equatable {
         let dark = fill.map { isDark($0) } ?? false
         ZStack {
             // the empty well: its floor in the shade of the wall at the top
-            shape.fill(LinearGradient(colors: [Color(hex: "D3DDEA"), Color(hex: "EEF3F9"), Color(hex: "FBFDFF")],
-                                      startPoint: .top, endPoint: .bottom))
+            // the empty well: black walls round a dark glass bottom, with a faint reflection
+            shape.fill(LinearGradient(colors: [Color(hex: "0A121D"), Color(hex: "13202F"), Color(hex: "1A2B3F")],
+                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+            shape.fill(LinearGradient(colors: [.white.opacity(0.08), .white.opacity(0)],
+                                      startPoint: .topLeading, endPoint: UnitPoint(x: 0.55, y: 0.55)))
             if let f = fill {
                 ZStack {
                     shape.fill(Color(hex: f))
@@ -927,17 +930,18 @@ struct WellCell: View, Equatable {
                 }
                 .transition(.scale(scale: 0.25).combined(with: .opacity))
             }
-            // the wall: in shadow at the top, catching the light at the bottom
-            shape.strokeBorder(LinearGradient(colors: [Color(hex: "93A6BF"), Color(hex: "C9D5E4"), .white],
-                                              startPoint: .top, endPoint: .bottom), lineWidth: 1.3)
+            // the black wall: its top edge catching the light
+            shape.strokeBorder(LinearGradient(colors: [Color(hex: "6B7685"), Color(hex: "39424E"), Color(hex: "232A33")],
+                                              startPoint: .top, endPoint: .bottom), lineWidth: 1.6)
             if fill != nil { shape.stroke(accent ?? Color(hex: "B9C8DF"), lineWidth: glow ? 2.4 : 1.3) }
-            if selected { shape.stroke(Brand.navy, lineWidth: 3) }
-            if dupSource { shape.stroke(Brand.navy, style: StrokeStyle(lineWidth: 2, dash: [4, 3])) }
+            if selected { shape.stroke(Color(hex: "9BD2FF"), lineWidth: 3) }
+            if dupSource { shape.stroke(Color(hex: "9BD2FF"), style: StrokeStyle(lineWidth: 2, dash: [4, 3])) }
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .multilineTextAlignment(.center)
                 .minimumScaleFactor(0.65)
-                .foregroundColor(dark ? .white : Brand.ink)
+                // light on an empty (dark) well or a dark stain, dark ink on a pale stain
+                .foregroundColor(fill == nil || dark ? Color(hex: "E3ECF7") : Brand.ink)
                 .padding(2)
         }
         .padding(2.5)
@@ -1212,15 +1216,19 @@ struct PlateShell: View {
     var body: some View {
         let outline = ChamferedRect(radius: 14, cut: 16)
         ZStack {
-            outline.fill(Color(hex: "1E3A66").opacity(0.16)).offset(y: 5).blur(radius: 7)
-            outline.fill(LinearGradient(colors: [Color(hex: "FFFFFF"), Color(hex: "EEF2F8"), Color(hex: "DEE5EF")],
+            outline.fill(Color.black.opacity(0.35)).offset(y: 6).blur(radius: 8)
+            // black polymer, a little lighter at the top where the room light falls
+            outline.fill(LinearGradient(colors: [Color(hex: "3A424E"), Color(hex: "20262F"), Color(hex: "15191F")],
                                         startPoint: .top, endPoint: .bottom))
-            outline.stroke(LinearGradient(colors: [.white, Color(hex: "C2CEDE"), Color(hex: "9DAEC6")],
+            outline.fill(LinearGradient(colors: [.white.opacity(0.09), .white.opacity(0)],
+                                        startPoint: .topLeading, endPoint: UnitPoint(x: 0.4, y: 0.6)))
+            // a lit outer edge, a dark groove just inside it
+            outline.stroke(LinearGradient(colors: [.white.opacity(0.32), .white.opacity(0.12), .white.opacity(0.05)],
                                           startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.4)
-            // the bevel just inside the edge
-            ChamferedRect(radius: 11, cut: 13).inset(by: 4)
-                .stroke(LinearGradient(colors: [Color(hex: "C6D2E2").opacity(0.9), .white.opacity(0.9)],
-                                       startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            ChamferedRect(radius: 11, cut: 13).inset(by: 5)
+                .stroke(Color.black.opacity(0.55), lineWidth: 1.4)
+            ChamferedRect(radius: 11, cut: 13).inset(by: 6)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
         }
         .padding(16).drawingGroup().padding(-16)      // drawn once into a single layer, with room for its shadow
     }
@@ -1255,8 +1263,8 @@ struct Embossed: View {
     let text: String
     var body: some View {
         ZStack {
-            Text(text).foregroundColor(.white).offset(y: 0.8)
-            Text(text).foregroundColor(Color(hex: "5E7290"))
+            Text(text).foregroundColor(.black.opacity(0.6)).offset(y: 0.8)
+            Text(text).foregroundColor(Color(hex: "9AA6B6"))
         }
         .font(.system(size: 11, weight: .bold, design: .rounded))
     }
