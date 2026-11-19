@@ -32,7 +32,9 @@ private struct Cell {
 let previewStepNames = ["Fix", "Permeabilise", "Block", "1st antibody", "2nd antibody", "Image"]
 private let stepShort = ["Fix", "Perm", "Block", "1st Ab", "2nd Ab", "Image"]
 private let stepLengths = [1.6, 1.4, 1.6, 2.8, 2.6]
-private let perChannel = 1.2, mergeHold = 3.0, holdEnd = 0.8, fadeEnd = 0.8
+private let perChannel = 1.6, mergeHold = 3.0, holdEnd = 0.8, fadeEnd = 0.8
+/// The confocal scan: how long the laser takes to draw one channel, and the merge.
+private let scanLength = 0.95, mergeScan = 0.6
 
 private func ellipsePath(_ cell: Cell, grow: CGFloat = 0) -> CGPath {
     var t = CGAffineTransform(translationX: cell.c.x, y: cell.c.y).rotated(by: cell.angle)
@@ -47,6 +49,9 @@ private func neuritePath(_ pts: [CGPoint]) -> CGPath {
 }
 
 final class StainingPreviewView: AmbientLayerView {
+    /// The compact version projected from a well: only the confocal scan, in a translucent cyan scope.
+    var hologram = false
+    private let holo = CALayer(), lineLabel = CATextLayer()
     private var info: PreviewInfo?
     private var replay = -1
     private let stage = CALayer()
@@ -55,6 +60,12 @@ final class StainingPreviewView: AmbientLayerView {
     private let fovBack = CALayer(), phase = CALayer(), perm = CALayer(), haze = CALayer(), darkness = CALayer(), merge = CALayer()
     private let ring = CALayer()
     private var channelLayers: [CALayer] = []
+    /// What each channel has been drawn down to so far, and the laser line drawing it.
+    private var channelMasks: [CALayer] = []
+    private let mergeMask = CALayer(), scanLine = CALayer()
+    private var scanImages: [CGImage?] = []
+    private var scanWhite: CGImage?
+    private var scanShown = -2
     private typealias Flyer = (layer: CALayer, from: CGPoint, to: CGPoint, final: CGFloat, wobble: CGFloat)
     private var ab1: [Flyer] = []
     private var ab2: [Flyer] = []
@@ -128,7 +139,7 @@ final class StainingPreviewView: AmbientLayerView {
 
     override func layout() {
         super.layout()
-        guard bounds.size != built, bounds.width > 420, bounds.height > 200, info != nil else { return }
+        guard bounds.size != built, bounds.width > (hologram ? 80 : 420), bounds.height > (hologram ? 80 : 200), info != nil else { return }
         build()
         if ambientActive { show(clock) } else { rest() }
     }
@@ -137,6 +148,7 @@ final class StainingPreviewView: AmbientLayerView {
 
     private func build() {
         guard let info = info else { return }
+        if hologram { buildHologram(info); return }
         built = bounds.size
         let W = bounds.width, H = bounds.height
         func up(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: H - r.maxY, width: r.width, height: r.height) }
@@ -256,7 +268,37 @@ final class StainingPreviewView: AmbientLayerView {
         }
         darkness.removeFromSuperlayer(); fov.addSublayer(darkness)
         channelLayers.forEach { fov.addSublayer($0) }
+        channelMasks = channelLayers.map { l in
+            let m = CALayer()
+            m.backgroundColor = NSColor.black.cgColor
+            m.frame = CGRect(x: 0, y: D, width: D, height: 0)
+            l.mask = m
+            return m
+        }
         merge.removeFromSuperlayer(); fov.addSublayer(merge)
+        mergeMask.backgroundColor = NSColor.black.cgColor
+        mergeMask.frame = CGRect(x: 0, y: 0, width: D, height: D)
+        merge.mask = mergeMask
+        // the laser line: a bright core in the channel's colour with a glow above and below
+        func line(_ hex: String) -> CGImage? {
+            renderImage(CGSize(width: D, height: 22), screenScale) { c in
+                let space = CGColorSpace(name: CGColorSpace.sRGB)!
+                if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0), cg(hex, 0.55), cg(hex, 0)] as CFArray, locations: [0, 0.5, 1]) {
+                    c.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: 22), options: [])
+                }
+                if let g = CGGradient(colorsSpace: space, colors: [NSColor.white.withAlphaComponent(0).cgColor, NSColor.white.withAlphaComponent(0.95).cgColor, NSColor.white.withAlphaComponent(0).cgColor] as CFArray, locations: [0, 0.5, 1]) {
+                    c.saveGState(); c.clip(to: CGRect(x: 0, y: 10.2, width: D, height: 1.6))
+                    c.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: D, y: 0), options: [])
+                    c.restoreGState()
+                }
+            }
+        }
+        scanImages = info.channels.map { line($0.fluor.hex) }
+        scanWhite = line("FFFFFF")
+        scanLine.removeFromSuperlayer(); fov.addSublayer(scanLine)
+        scanLine.bounds = CGRect(x: 0, y: 0, width: D, height: 22)
+        scanLine.opacity = 0
+        scanShown = -2
         merge.contents = renderImage(fsize, screenScale) { c in
             c.setBlendMode(.plusLighter)
             for (j, ch) in info.channels.enumerated() { self.drawChannel(c, ch, j) }
@@ -316,9 +358,134 @@ final class StainingPreviewView: AmbientLayerView {
         refreshWords()
     }
 
+    /// Pictures already drawn for a hologram, by stain look and size: picking a stain again shows at once.
+    private static var holoCache: [String: [CGImage?]] = [:]
+
+    /// The hologram: a round scope with the cells, the channels drawn by the laser line, and the merge.
+    private func buildHologram(_ info: PreviewInfo) {
+        built = bounds.size
+        let W = bounds.width, H = bounds.height
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        stage.frame = bounds
+        back.contents = nil
+        D = min(W, H) - 8
+        let fovTD = CGRect(x: (W - D) / 2, y: (H - D) / 2, width: D, height: D)
+        fov.frame = CGRect(x: fovTD.minX, y: H - fovTD.maxY, width: D, height: D)
+        fovMask.path = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: D, height: D), transform: nil)
+        cells = makeCells(info.seed)
+        stepX = Array(repeating: 0, count: 6)
+        let fsize = CGSize(width: D, height: D)
+        for l in [fovBack, phase, perm, haze, darkness, merge] { l.frame = CGRect(origin: .zero, size: fsize) }
+        fovBack.contents = renderImage(fsize, screenScale) { c in
+            let space = CGColorSpace(name: CGColorSpace.sRGB)!
+            if let g = CGGradient(colorsSpace: space, colors: [cg("0B3550", 0.5), cg("04172A", 0.62)] as CFArray, locations: [0, 1]) {
+                c.drawRadialGradient(g, startCenter: CGPoint(x: D / 2, y: D / 2), startRadius: 0, endCenter: CGPoint(x: D / 2, y: D / 2), endRadius: D / 2, options: [])
+            }
+        }
+        for l in [phase, perm, haze] { l.contents = nil; l.opacity = 0 }
+        darkness.backgroundColor = cg("03111F", 0.5)
+        (ab1 + ab2).forEach { $0.layer.removeFromSuperlayer() }
+        ab1 = []; ab2 = []
+        for l in [marker, progress, stepTitle, stepDetail, headTitle, headSub, headNote] { l.isHidden = true }
+        dots.forEach { $0.removeFromSuperlayer() }; dots = []
+        chips.forEach { $0.removeFromSuperlayer() }; chips = []
+
+        let key = "\(look(info).map { "\($0)" } ?? "")|\(Int(D))"
+        let pics: [CGImage?]
+        if let cached = Self.holoCache[key] { pics = cached } else {
+            pics = info.channels.enumerated().map { j, ch in renderImage(fsize, screenScale) { c in self.drawChannel(c, ch, j) } }
+                + [renderImage(fsize, screenScale) { c in
+                    c.setBlendMode(.plusLighter)
+                    for (j, ch) in info.channels.enumerated() { self.drawChannel(c, ch, j) }
+                }]
+            if Self.holoCache.count > 24 { Self.holoCache.removeAll() }
+            Self.holoCache[key] = pics
+        }
+        channelLayers.forEach { $0.removeFromSuperlayer() }
+        channelLayers = info.channels.indices.map { j in
+            let l = CALayer()
+            l.frame = CGRect(origin: .zero, size: fsize)
+            l.contents = pics[j]
+            l.opacity = 0
+            return l
+        }
+        darkness.removeFromSuperlayer(); fov.addSublayer(darkness)
+        channelLayers.forEach { fov.addSublayer($0) }
+        channelMasks = channelLayers.map { l in
+            let m = CALayer(); m.backgroundColor = NSColor.black.cgColor
+            m.frame = CGRect(x: 0, y: D, width: D, height: 0); l.mask = m; return m
+        }
+        merge.removeFromSuperlayer(); fov.addSublayer(merge)
+        merge.contents = pics.last ?? nil
+        mergeMask.backgroundColor = NSColor.black.cgColor
+        mergeMask.frame = CGRect(x: 0, y: 0, width: D, height: D)
+        merge.mask = mergeMask
+        func line(_ hex: String) -> CGImage? {
+            renderImage(CGSize(width: D, height: 18), screenScale) { c in
+                let space = CGColorSpace(name: CGColorSpace.sRGB)!
+                if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0), cg(hex, 0.6), cg(hex, 0)] as CFArray, locations: [0, 0.5, 1]) {
+                    c.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: 18), options: [])
+                }
+                c.setFillColor(NSColor(white: 1, alpha: 0.9).cgColor); c.fill(CGRect(x: 0, y: 8.3, width: D, height: 1.4))
+            }
+        }
+        scanImages = info.channels.map { line($0.fluor.hex) }
+        scanWhite = line("FFFFFF")
+        scanLine.removeFromSuperlayer(); fov.addSublayer(scanLine)
+        scanLine.bounds = CGRect(x: 0, y: 0, width: D, height: 18)
+        scanLine.opacity = 0
+        scanShown = -2
+
+        // the hologram itself: scan lines across the image, a cyan rim with a glow
+        holo.removeFromSuperlayer(); stage.addSublayer(holo)
+        holo.frame = bounds
+        holo.contents = renderImage(bounds.size, screenScale) { c in
+            let space = CGColorSpace(name: CGColorSpace.sRGB)!
+            let ctr = CGPoint(x: fovTD.midX, y: fovTD.midY)
+            c.saveGState(); c.addEllipse(in: fovTD); c.clip()
+            c.setFillColor(cg("7FE8FF", 0.07))
+            var y = fovTD.minY
+            while y < fovTD.maxY { c.fill(CGRect(x: fovTD.minX, y: y, width: D, height: 1)); y += 3 }
+            if let g = CGGradient(colorsSpace: space, colors: [cg("7FE8FF", 0), cg("7FE8FF", 0.22)] as CFArray, locations: [0.72, 1]) {
+                c.drawRadialGradient(g, startCenter: ctr, startRadius: 0, endCenter: ctr, endRadius: D / 2, options: [])
+            }
+            c.restoreGState()
+            if let g = CGGradient(colorsSpace: space, colors: [cg("7FE8FF", 0.45), cg("7FE8FF", 0)] as CFArray, locations: [0, 1]) {
+                c.drawRadialGradient(g, startCenter: ctr, startRadius: D / 2, endCenter: ctr, endRadius: D / 2 + 4, options: [])
+            }
+            c.setStrokeColor(cg("9BF0FF", 0.9)); c.setLineWidth(1.4); c.strokeEllipse(in: fovTD.insetBy(dx: 0.7, dy: 0.7))
+            c.setStrokeColor(cg("9BF0FF", 0.35)); c.setLineWidth(0.8)
+            c.setLineDash(phase: 0, lengths: [2, 5]); c.strokeEllipse(in: fovTD.insetBy(dx: 5, dy: 5))
+            // scale bar
+            c.setLineDash(phase: 0, lengths: [])
+            let sy = fovTD.minY + D * 0.70, sx = fovTD.minX + D * 0.74
+            c.setStrokeColor(NSColor(white: 1, alpha: 0.85).cgColor); c.setLineWidth(2)
+            c.strokeLineSegments(between: [CGPoint(x: sx - 24, y: sy), CGPoint(x: sx, y: sy)])
+            drawText("20 µm", CGPoint(x: sx - 12, y: sy + 3), 7.5, NSColor(white: 1, alpha: 0.8), weight: .semibold, center: true)
+        }
+        ring.contents = nil
+
+        func text(_ t: CATextLayer, _ y: CGFloat, _ size: CGFloat, mono: Bool) {
+            t.isHidden = false
+            t.frame = CGRect(x: fovTD.minX + 16, y: H - y - size - 4, width: D - 32, height: size + 4)
+            t.font = mono ? NSFont.monospacedDigitSystemFont(ofSize: size, weight: .semibold) : NSFont.systemFont(ofSize: size, weight: .bold)
+            t.fontSize = size
+            t.alignmentMode = .center
+            t.contentsScale = screenScale
+        }
+        text(fovLabel, fovTD.minY + D * 0.11, 10, mono: false)
+        labelPill.position = CGPoint(x: fov.frame.midX, y: fovLabel.frame.midY - 1)
+        lineLabel.removeFromSuperlayer(); stage.addSublayer(lineLabel)
+        text(lineLabel, fovTD.minY + D * 0.76, 8.5, mono: true)
+        lineLabel.foregroundColor = cg("9BF0FF")
+        lineLabel.string = ""
+        last = (-1, "", -2)
+    }
+
     /// The words and the channel chips: cheap, so they follow every keystroke.
     private func refreshWords() {
-        guard let info = info, built != .zero else { return }
+        guard let info = info, built != .zero, !hologram else { return }
         let W = bounds.width, H = bounds.height, x0 = rightX, RW = W - x0 - pad - 6
         func up(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: H - r.maxY, width: r.width, height: r.height) }
         headTitle.string = info.title
@@ -483,9 +650,14 @@ final class StainingPreviewView: AmbientLayerView {
     override func tick(_ dt: Double) {
         guard built != .zero else { return }
         clock += dt
-        if clock >= loopLength { clock = 0 }
+        if hologram {
+            // only the imaging: the lamp is already off when the scope appears
+            if clock < holoStart || clock >= loopLength { clock = holoStart }
+        } else if clock >= loopLength { clock = 0 }
         show(clock)
     }
+
+    private var holoStart: Double { imagingStart + 0.45 }
 
     private func set(_ l: CALayer, _ o: Double) { let f = Float(max(0, min(1, o))); if abs(l.opacity - f) > 0.004 { l.opacity = f } }
 
@@ -526,22 +698,62 @@ final class StainingPreviewView: AmbientLayerView {
         // image: the lamp goes dark, each channel on its own, then all together
         set(darkness, dark * fade)
         var label = "Phase contrast", labelHex = "FFFFFF", chip = -1
+        var scanning = -1, scanP = 0.0
         for (j, l) in channelLayers.enumerated() {
             let w0 = imagingStart + 0.6 + Double(j) * perChannel
-            let o = easeOut((t - w0) / 0.3) * clamp01((w0 + perChannel - t) / 0.3 + 1) * (t < w0 + perChannel + 0.3 ? 1 : 0)
+            let o = (t >= w0 ? 1 : 0) * clamp01((w0 + perChannel - t) / 0.3 + 1) * (t < w0 + perChannel + 0.3 ? 1 : 0)
             set(l, o * fade)
-            if t >= w0 && t < w0 + perChannel { label = "\(info.channels[j].fluor.name) · \(info.channels[j].label)"; labelHex = info.channels[j].fluor.hex; chip = j }
+            let p = clamp01((t - w0) / scanLength)
+            if j < channelMasks.count {
+                let h = D * CGFloat(p)
+                let f = CGRect(x: 0, y: D - h, width: D, height: h)
+                if channelMasks[j].frame != f { channelMasks[j].frame = f }
+            }
+            if t >= w0 && t < w0 + perChannel {
+                let ch = info.channels[j]
+                label = p < 1 ? "Scanning · \(ch.fluor.name) laser" : "\(ch.fluor.name) · \(ch.label)"
+                labelHex = ch.fluor.hex; chip = j
+                if p > 0 && p < 1 { scanning = j; scanP = p }
+            }
         }
-        let m = easeOut((t - mergeStart) / 0.5)
-        set(merge, m * fade)
+        let mp = clamp01((t - mergeStart) / mergeScan)
+        let mh = D * CGFloat(t >= mergeStart ? mp : 1)
+        let mf = CGRect(x: 0, y: D - mh, width: D, height: mh)
+        if mergeMask.frame != mf { mergeMask.frame = mf }
+        set(merge, (t >= mergeStart ? 1 : 0) * fade)
+        if t >= mergeStart && mp < 1 { scanning = 99; scanP = mp }
         if t >= mergeStart { label = info.channels.isEmpty ? "No dyes recognised" : "Merge"; labelHex = "FFFFFF"; chip = 99 }
         else if t >= imagingStart && chip < 0 { label = "Lamp off · fluorescence" }
+        // the laser line, where the image is being drawn
+        if scanning != scanShown {
+            scanShown = scanning
+            if scanning == 99 { scanLine.contents = scanWhite }
+            else if scanning >= 0 && scanning < scanImages.count { scanLine.contents = scanImages[scanning] }
+        }
+        if hologram {
+            let line: String
+            if scanning >= 0 && scanning < info.channels.count { line = "λ\(info.channels[scanning].fluor.name) · line \(Int(scanP * 512))/512" }
+            else if scanning == 99 { line = "merging \(info.channels.count) ch" }
+            else if t >= mergeStart { line = "merge · \(info.channels.count) ch · 512²" }
+            else if chip >= 0 && chip < info.channels.count { line = "λ\(info.channels[chip].fluor.name) · 512/512 ✓" }
+            else { line = "laser on" }
+            if lineLabel.string as? String != line { lineLabel.string = line }
+            let flicker = 0.9 + 0.06 * sin(t * 23) + 0.04 * sin(t * 61)
+            set(holo, flicker * fade)
+        }
+        if scanning >= 0 {
+            scanLine.position = CGPoint(x: D / 2, y: D - D * CGFloat(scanP))
+            set(scanLine, min(1, scanP * 8, (1 - scanP) * 8) * fade)
+        } else {
+            set(scanLine, 0)
+        }
         set(fovLabel, fade)
         if label != last.label {
             last.label = label
             fovLabel.string = label
             fovLabel.foregroundColor = cg(labelHex)
-            labelPill.bounds = CGRect(x: 0, y: 0, width: textWidth(label, 11, weight: .bold) + 20, height: 19)
+            labelPill.bounds = hologram ? CGRect(x: 0, y: 0, width: textWidth(label, 10, weight: .bold) + 16, height: 16)
+                                        : CGRect(x: 0, y: 0, width: textWidth(label, 11, weight: .bold) + 20, height: 19)
         }
         set(labelPill, fade)
         if chip != last.chip {
@@ -591,7 +803,12 @@ struct StainingPreview: NSViewRepresentable {
     let info: PreviewInfo
     let active: Bool
     let replay: Int
-    func makeNSView(context: Context) -> StainingPreviewView { StainingPreviewView(frame: .zero) }
+    var hologram = false
+    func makeNSView(context: Context) -> StainingPreviewView {
+        let v = StainingPreviewView(frame: .zero)
+        v.hologram = hologram
+        return v
+    }
     func updateNSView(_ v: StainingPreviewView, context: Context) {
         v.setInfo(info, replay: replay)
         v.ambientActive = active
@@ -640,7 +857,7 @@ extension Store {
         let dyes = secs.map { $0.name }.joined(separator: " + ")
         return PreviewInfo(title: demo ? "Demo" : "Stain \(index + 1)",
                            subtitle: [markers, dyes].filter { !$0.isEmpty }.joined(separator: "  →  "),
-                           demo: demo, channels: report.channels, details: details,
+                           demo: demo, channels: report.channels.sorted { $0.fluor.wavelength < $1.fluor.wavelength }, details: details,
                            seed: demo ? 3 : index + 1, issues: report.issues.count)
     }
 }

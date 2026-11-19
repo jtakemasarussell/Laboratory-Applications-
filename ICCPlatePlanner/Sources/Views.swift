@@ -167,7 +167,7 @@ struct ContentView: View {
                     ScrollView([.vertical, .horizontal]) {
                         VStack(alignment: .leading, spacing: 14) {
                             PlateSection()
-                            PreviewSection()
+                                .zIndex(1)      // the hologram floats over the cards below
                             SummarySection()
                         }
                         .frame(width: max(geo.size.width - 16, 712))   // never narrower than the plate
@@ -645,6 +645,12 @@ struct BlockingSection: View {
 struct PlateSection: View {
     @EnvironmentObject var store: Store
     @FocusState private var labelFocused: Bool
+    // kept without observing them: the pointer moving changes these many times a second, and only the
+    // tilt wrapper and the hologram (which observe them) should redraw, never this whole card
+    private let tiltBox = State(initialValue: TiltModel())
+    private let hoverBox = State(initialValue: HoverFlag())
+    private var tilt: TiltModel { tiltBox.wrappedValue }
+    private var hover: HoverFlag { hoverBox.wrappedValue }
 
     private let cw: CGFloat = 48, ch: CGFloat = 44, leftW: CGFloat = 64, letterW: CGFloat = 18
 
@@ -705,7 +711,7 @@ struct PlateSection: View {
                                 .frame(width: leftW, height: ch)
                         }
                     }
-                    plateBody
+                    TiltPlate(on: store.motion, model: tilt, hover: hover) { plateBody }
                 }
             }
 
@@ -798,33 +804,36 @@ struct PlateSection: View {
         .buttonStyle(SquishStyle(on: store.motion))
     }
 
-    /// Plate drawn like the real thing: a body with rounded wells, numbered columns and lettered rows.
+    /// Plate drawn like the real thing: a moulded body with the A1 corner cut, embossed column numbers
+    /// and row letters, and a raised deck of square wells.
     private var plateBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 0) {
                 Spacer().frame(width: letterW)
                 ForEach(0..<12, id: \.self) { j in
-                    Text("\(j + 1)").font(.system(size: 11, weight: .bold, design: .serif))
-                        .foregroundColor(Brand.navy).frame(width: cw)
+                    Embossed(text: "\(j + 1)").frame(width: cw)
                 }
             }
             .frame(height: 14)
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     ForEach(0..<8, id: \.self) { i in
-                        Text(rowLetters[i]).font(.system(size: 11, weight: .bold, design: .serif))
-                            .foregroundColor(Brand.navy).frame(width: letterW, height: ch)
+                        Embossed(text: rowLetters[i]).frame(width: letterW, height: ch)
                     }
                 }
                 grid
+                    .background(
+                        // the raised deck the wells sit in
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(LinearGradient(colors: [Color(hex: "F9FBFE"), Color(hex: "E8EEF6")], startPoint: .top, endPoint: .bottom))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(LinearGradient(colors: [.white, Color(hex: "B7C6DA")], startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
+                            .padding(-4)
+                    )
             }
         }
-        .padding(.top, 6).padding(.bottom, 8).padding(.leading, 4).padding(.trailing, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(LinearGradient(colors: [Brand.pale, Color(hex: "D9E3F1")], startPoint: .top, endPoint: .bottom))
-        )
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color(hex: "B9C8DF"), lineWidth: 1))
+        .padding(.top, 8).padding(.bottom, 12).padding(.leading, 6).padding(.trailing, 12)
+        .background(PlateShell())
     }
 
     private var grid: some View {
@@ -851,6 +860,11 @@ struct PlateSection: View {
             }
         }
         .overlay(GlintLane(stained: (0..<96).filter { w in store.exp.wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
+                    .allowsHitTesting(false))
+        .overlay(HologramProjector(hover: hover, cw: cw, ch: ch))
+        .overlay(PlateReaderSweep(at: store.readerAt,
+                                  wells: (0..<96).compactMap { w in store.exp.wells[w].flatMap { ids.firstIndex(of: $0) }.map { ReaderWell(index: w, hex: fills[$0]) } },
+                                  cw: cw, ch: ch, on: store.motion)
                     .allowsHitTesting(false))
         .contentShape(Rectangle())
         .gesture(
@@ -891,15 +905,31 @@ struct WellCell: View, Equatable {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         let dark = fill.map { isDark($0) } ?? false
         ZStack {
-            shape.fill(Color.white)
+            // the empty well: its floor in the shade of the wall at the top
+            shape.fill(LinearGradient(colors: [Color(hex: "D3DDEA"), Color(hex: "EEF3F9"), Color(hex: "FBFDFF")],
+                                      startPoint: .top, endPoint: .bottom))
             if let f = fill {
-                shape.fill(Color(hex: f))
-                    .transition(.scale(scale: 0.25).combined(with: .opacity))
+                ZStack {
+                    shape.fill(Color(hex: f))
+                    // the meniscus: darker where the liquid climbs the wall, brighter in the middle
+                    shape.strokeBorder(Color.black.opacity(dark ? 0.22 : 0.10), lineWidth: 3)
+                    shape.fill(RadialGradient(colors: [.white.opacity(dark ? 0.22 : 0.42), .white.opacity(0)],
+                                              center: UnitPoint(x: 0.35, y: 0.3), startRadius: 0, endRadius: cw * 0.55))
+                    // the light on the surface
+                    Capsule().fill(Color.white.opacity(dark ? 0.10 : 0.20))
+                        .frame(width: cw * 0.24, height: 2.4)
+                        .rotationEffect(.degrees(-18))
+                        .offset(x: -cw * 0.17, y: -ch * 0.27)
+                }
+                .transition(.scale(scale: 0.25).combined(with: .opacity))
             }
-            shape.stroke(accent ?? Color(hex: "B9C8DF"), lineWidth: fill == nil ? 0.9 : (glow ? 2.4 : 1.6))
+            // the wall: in shadow at the top, catching the light at the bottom
+            shape.strokeBorder(LinearGradient(colors: [Color(hex: "93A6BF"), Color(hex: "C9D5E4"), .white],
+                                              startPoint: .top, endPoint: .bottom), lineWidth: 1.3)
+            if fill != nil { shape.stroke(accent ?? Color(hex: "B9C8DF"), lineWidth: glow ? 2.4 : 1.3) }
             if selected { shape.stroke(Brand.navy, lineWidth: 3) }
             if dupSource { shape.stroke(Brand.navy, style: StrokeStyle(lineWidth: 2, dash: [4, 3])) }
             Text(label)
@@ -926,38 +956,8 @@ struct WellCell: View, Equatable {
     }
 }
 
-// MARK: - Staining preview
+// MARK: - Compatibility
 
-struct PreviewSection: View {
-    @EnvironmentObject var store: Store
-
-    var body: some View {
-        let info = store.previewInfo
-        Card(title: "Staining preview", icon: "camera.aperture") {
-            HStack(spacing: 8) {
-                Text(info.demo ? "A demo with the department's LMX1A/B and FOXA2 until you add a stain set."
-                               : "Follows the stain you paint with: pick another stain above the plate to see its panel. Colours come from each secondary's dye.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Button {
-                    store.previewReplay += 1
-                    store.tap(.generic)
-                } label: {
-                    Label("Replay", systemImage: "play.circle").font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .disabled(!store.motion)
-                .help("Play the protocol from the start")
-            }
-            StainingPreview(info: info, active: store.ambient, replay: store.previewReplay)
-                .frame(height: 300)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-    }
-}
-
-/// A green tick, a red circle, or a grey question mark when there is not enough to go on.
 struct VerdictIcon: View {
     let verdict: Verdict
     let why: String
@@ -976,7 +976,26 @@ struct VerdictIcon: View {
 
 /// Every primary with the secondary that should find it, judged against the makers' data.
 struct PanelStrip: View {
+    @EnvironmentObject var store: Store
     let report: PanelReport
+
+    private func dockState(_ c: Combination) -> DockState {
+        guard c.secondary != nil else { return .none }
+        switch c.verdict {
+        case .ok: return .bound(c.fluor?.hex ?? "8EA4C3")
+        case .problem: return .refused
+        case .unknown: return .unsure
+        }
+    }
+
+    private func dockHelp(_ c: Combination) -> String {
+        switch dockState(c) {
+        case .bound: return "The secondary takes hold of the primary: \(c.secondary ?? "") recognises \(c.host ?? "its") host."
+        case .refused: return "The secondary cannot bind this primary."
+        case .unsure: return "Not enough is known to say whether these bind."
+        case .none: return "No secondary for this primary yet."
+        }
+    }
 
     var body: some View {
         let r = report
@@ -993,9 +1012,13 @@ struct PanelStrip: View {
                     }
                 }
                 .font(.system(size: 11, weight: .semibold))
-                ForEach(r.combos, id: \.primaryID) { c in
+                ForEach(Array(r.combos.enumerated()), id: \.element.primaryID) { k, c in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         VerdictIcon(verdict: c.verdict, why: c.reasons.joined(separator: "\n"), size: 11.5)
+                        DockingIcon(state: dockState(c), motion: store.motion, delay: Double(k) * 0.12)
+                            .frame(width: DockingIcon.size.width, height: DockingIcon.size.height)
+                            .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
+                            .help(dockHelp(c))
                         Text(c.marker).font(.system(size: 11.5, weight: .bold)).foregroundColor(Brand.ink)
                         Text(c.host ?? "host?").font(.system(size: 11)).foregroundStyle(.secondary)
                             .help(c.hostFacts ?? "Host from the name in brackets")
@@ -1176,5 +1199,64 @@ struct DyeTag: View {
         .background(RoundedRectangle(cornerRadius: 4).fill(c.opacity(0.10)))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(c.opacity(0.35), lineWidth: 0.75))
         .help("Dye: \(fluor.name) (\(fluor.wavelength) nm channel). This shows the colour, not a check result.")
+    }
+}
+
+
+// MARK: - The plate's moulding
+
+/// The plate body: white polymer with a soft drop shadow, a bevelled edge and the A1 corner cut off,
+/// as on a real SBS-format plate.
+struct PlateShell: View {
+    var body: some View {
+        let outline = ChamferedRect(radius: 14, cut: 16)
+        ZStack {
+            outline.fill(Color(hex: "1E3A66").opacity(0.16)).offset(y: 5).blur(radius: 7)
+            outline.fill(LinearGradient(colors: [Color(hex: "FFFFFF"), Color(hex: "EEF2F8"), Color(hex: "DEE5EF")],
+                                        startPoint: .top, endPoint: .bottom))
+            outline.stroke(LinearGradient(colors: [.white, Color(hex: "C2CEDE"), Color(hex: "9DAEC6")],
+                                          startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.4)
+            // the bevel just inside the edge
+            ChamferedRect(radius: 11, cut: 13).inset(by: 4)
+                .stroke(LinearGradient(colors: [Color(hex: "C6D2E2").opacity(0.9), .white.opacity(0.9)],
+                                       startPoint: .top, endPoint: .bottom), lineWidth: 1)
+        }
+        .padding(16).drawingGroup().padding(-16)      // drawn once into a single layer, with room for its shadow
+    }
+}
+
+/// A rounded rectangle with its top-left corner cut at 45°.
+struct ChamferedRect: Shape, InsettableShape {
+    var radius: CGFloat
+    var cut: CGFloat
+    var insetAmount: CGFloat = 0
+
+    func inset(by amount: CGFloat) -> ChamferedRect { var c = self; c.insetAmount += amount; return c }
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX + cut, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX - radius, y: r.minY))
+        p.addArc(center: CGPoint(x: r.maxX - radius, y: r.minY + radius), radius: radius, startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - radius))
+        p.addArc(center: CGPoint(x: r.maxX - radius, y: r.maxY - radius), radius: radius, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        p.addLine(to: CGPoint(x: r.minX + radius, y: r.maxY))
+        p.addArc(center: CGPoint(x: r.minX + radius, y: r.maxY - radius), radius: radius, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + cut))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// A column number or row letter moulded into the plate: a light edge under dark lettering.
+struct Embossed: View {
+    let text: String
+    var body: some View {
+        ZStack {
+            Text(text).foregroundColor(.white).offset(y: 0.8)
+            Text(text).foregroundColor(Color(hex: "5E7290"))
+        }
+        .font(.system(size: 11, weight: .bold, design: .rounded))
     }
 }

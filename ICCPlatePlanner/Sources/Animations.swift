@@ -63,23 +63,80 @@ let benchLines = [
     "Label the tube. Future you is not a mind reader.",
 ]
 
+/// The footer's one-liner. A new line every 9 seconds, slid in by Core Animation (a SwiftUI transition here
+/// re-rendered the whole window for most of a second); it waits while the app is in the background.
 struct Tagline: View {
     @EnvironmentObject var store: Store
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
-        TimelineView(.periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: 9)) { ctx in
-            let i = Int(ctx.date.timeIntervalSinceReferenceDate / 9) % benchLines.count
-            Text(benchLines[i])
-                .font(.system(size: 12, design: .serif)).italic()
-                .foregroundColor(Brand.mid)
-                .id(i)
-                .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .move(edge: .top).combined(with: .opacity)))
-                .frame(maxWidth: .infinity)
-                .frame(height: 18)
-                .clipped()
-                .animation(Motion.on(store, reduceMotion) ? .easeInOut(duration: 0.7) : nil, value: i)
+        TaglineText(active: store.ambient, motion: store.motion)
+            .frame(maxWidth: .infinity)
+            .frame(height: 18)
+    }
+}
+
+struct TaglineText: NSViewRepresentable {
+    let active: Bool
+    let motion: Bool
+    func makeNSView(context: Context) -> TaglineView { TaglineView(frame: .zero) }
+    func updateNSView(_ v: TaglineView, context: Context) { v.active = active; v.motion = motion }
+}
+
+final class TaglineView: NSView {
+    private let text = CATextLayer()
+    private var timer: Timer?
+    private var index = Int(Date().timeIntervalSinceReferenceDate / 9) % benchLines.count
+    var motion = true
+    var active = false {
+        didSet {
+            guard active != oldValue else { return }
+            timer?.invalidate(); timer = nil
+            guard active else { return }
+            let t = Timer(timeInterval: 9, repeats: true) { [weak self] _ in self?.next() }
+            t.tolerance = 0.5
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
         }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        layer = CALayer()
+        wantsLayer = true
+        layer?.masksToBounds = true
+        text.contentsScale = screenScale
+        text.alignmentMode = .center
+        var font = NSFont.systemFont(ofSize: 12)
+        if let d = font.fontDescriptor.withDesign(.serif)?.withSymbolicTraits(.italic), let f = NSFont(descriptor: d, size: 12) { font = f }
+        text.font = font
+        text.fontSize = 12
+        text.foregroundColor = NSColor(hex: "4A78B8").cgColor
+        text.string = benchLines[index]
+        layer?.addSublayer(text)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    deinit { timer?.invalidate() }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        text.frame = CGRect(x: 0, y: (bounds.height - 16) / 2, width: bounds.width, height: 16)
+        CATransaction.commit()
+    }
+
+    private func next() {
+        index = (index + 1) % benchLines.count
+        if motion {
+            let t = CATransition()
+            t.type = .push
+            t.subtype = .fromBottom
+            t.duration = 0.6
+            t.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            text.add(t, forKey: "next")
+        }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        text.string = benchLines[index]
+        CATransaction.commit()
     }
 }
 

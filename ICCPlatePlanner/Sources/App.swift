@@ -40,6 +40,7 @@ enum Main {
             return
         }
         if let i = a.firstIndex(of: "--qc"), a.count > i + 1 { plateQC(a[i + 1]); return }
+        if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--qc-state"), a.count > i + 1 {
             // the app's own saved state from the version before loads in this one, with nothing lost
             let d = try! Data(contentsOf: URL(fileURLWithPath: a[i + 1]))
@@ -269,6 +270,8 @@ final class Store: ObservableObject {
     @Published var appActive = false
     /// When the export confetti went off.
     @Published var confettiAt = Date.distantPast
+    /// When the plate reader last swept the plate (export).
+    @Published var readerAt = Date.distantPast
     /// The stain whose wells stand out on the plate while the pointer rests on its card or legend row.
     @Published var spotlightSet: UUID? = nil
     /// Bumped to play the staining preview from the start.
@@ -690,6 +693,14 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The plate reader sweeps the stained wells, then the confetti flies.
+    func celebrateExport() {
+        let now = Date()
+        let stained = exp.wells.contains { w in w.map { id in exp.sets.contains { $0.id == id } } ?? false }
+        if stained && motion { readerAt = now }
+        confettiAt = stained && motion ? now.addingTimeInterval(readerSweepLength - 0.15) : now
+    }
+
     func export() {
         NSApp.keyWindow?.makeFirstResponder(nil)   // commit any field still being edited
         let panel = NSSavePanel()
@@ -701,7 +712,7 @@ final class Store: ObservableObject {
             try buildWorkbook(exp, settings).write(to: url, options: .atomic)
             library.remember(exp.sets)
             showToast(exportLines.randomElement() ?? "Exported.")
-            confettiAt = Date()
+            celebrateExport()
             tap(.levelChange)
             if openAfterExport { NSWorkspace.shared.open(url) }
         } catch {
@@ -776,9 +787,113 @@ func snapshot(_ path: String) {
     let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
     win.appearance = NSAppearance(named: .aqua)
     win.contentView = host
+    if let i = a.firstIndex(of: "--holo"), a.count > i + 2, let k = Int(a[i + 1]), let t = Double(a[i + 2]), k >= 1, k <= store.exp.sets.count {
+        // the hologram over stain k, `t` seconds into the protocol
+        store.tool = .paint(store.exp.sets[k - 1].id)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        func find(_ v: NSView) -> StainingPreviewView? { (v as? StainingPreviewView) ?? v.subviews.lazy.compactMap(find).first }
+        find(host)?.preview(at: t)
+    }
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(1.0))
     guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
     host.cacheDisplay(in: host.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+}
+
+
+// MARK: - Lag check (development)
+
+/// The real window with a saved plate, through each moving part: CPU, the cost of each tick on the shared
+/// clock, and main-thread stalls (frames the screen would wait for).
+func lagCheck(_ platePath: String) {
+    let a = CommandLine.arguments
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let store = Store(inMemory: sampleExperiment())
+    if let d = try? Data(contentsOf: URL(fileURLWithPath: platePath)), let e = try? decodePlate(d) { store.exp = e }
+    store.tool = .erase
+    let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: 1360, height: 900))
+    let win = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1360, height: 900), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    win.contentView = host
+    win.orderFrontRegardless()
+    store.appActive = true
+    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+    var ticks: [Double] = [], gaps: [Double] = []
+    AmbientClock.probe = { ticks.append($0) }
+    var lastBeat = CACurrentMediaTime()
+    let beat = Timer(timeInterval: 1.0 / 120, repeats: true) { _ in
+        let now = CACurrentMediaTime(); gaps.append((now - lastBeat) * 1000); lastBeat = now
+    }
+    beat.tolerance = 0
+    RunLoop.main.add(beat, forMode: .common)
+    func cpu() -> Double {
+        var r = rusage(); getrusage(RUSAGE_SELF, &r)
+        return Double(r.ru_utime.tv_sec + r.ru_stime.tv_sec) + Double(r.ru_utime.tv_usec + r.ru_stime.tv_usec) / 1e6
+    }
+    func phase(_ name: String, _ secs: Double, _ start: () -> Void = {}) {
+        ticks = []; gaps = []; lastBeat = CACurrentMediaTime()
+        let c0 = cpu(), t0 = Date()
+        start()
+        var series: [String] = []
+        var cPrev = c0, tPrev = Date()
+        while Date().timeIntervalSince(t0) < secs {
+            RunLoop.main.run(until: min(t0.addingTimeInterval(secs), tPrev.addingTimeInterval(0.5)))
+            let c = cpu(), now = Date()
+            series.append(String(format: "%.0f", (c - cPrev) / now.timeIntervalSince(tPrev) * 100))
+            cPrev = c; tPrev = now
+        }
+        if a.contains("--series") { print("   CPU every 0.5 s:", series.joined(separator: " ")) }
+        let wall = Date().timeIntervalSince(t0), used = cpu() - c0
+        let tickAvg = ticks.isEmpty ? 0 : ticks.reduce(0, +) / Double(ticks.count)
+        let hitches = gaps.filter { $0 > 34 }
+        print(String(format: "%@: CPU %.1f%% · clock %.1f ticks/s, avg %.2f ms, max %.2f ms · main-thread stalls >34 ms: %d (worst %.0f ms)",
+                     name, used / wall * 100, Double(ticks.count) / wall, tickAvg, ticks.max() ?? 0, hitches.count, gaps.max() ?? 0))
+    }
+    if a.contains("--isolate") {
+        phase("idle (3 s)", 3)
+        phase("tool change only: Label tool (3 s)", 3) { store.tool = .text }
+        phase("type a well label (3 s)", 3) { store.setLabel(0, "x") }
+        phase("tilt, no animation (3 s)", 3) {
+            guard let tilt = TiltModel.current else { return }
+            let t0 = Date()
+            let move = Timer(timeInterval: 1.0 / 60, repeats: true) { t in
+                let e = Date().timeIntervalSince(t0); if e > 2.8 { t.invalidate(); return }
+                tilt.x = CGFloat(sin(e * 2.1)); tilt.y = CGFloat(cos(e * 1.7)); tilt.lit = true
+            }
+            RunLoop.main.add(move, forMode: .common)
+        }
+        phase("tilt settles (2 s)", 2)
+        beat.invalidate()
+        return
+    }
+    phase("plate idle, no stain picked (8 s)", 8)
+    phase("hologram scanning over a stain (14 s)", 14) { store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id) }
+    phase("hologram for a stain picked again (3 s)", 3) {
+        store.tool = .erase
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
+    }
+    phase("pointer moving over the plate: tilt (5 s)", 5) {
+        guard let tilt = TiltModel.current else { return }
+        let t0 = Date()
+        let move = Timer(timeInterval: 1.0 / 60, repeats: true) { t in
+            let e = Date().timeIntervalSince(t0)
+            if e > 4.8 { t.invalidate(); return }
+            tilt.x = CGFloat(sin(e * 2.1)); tilt.y = CGFloat(cos(e * 1.7)); tilt.lit = true
+        }
+        RunLoop.main.add(move, forMode: .common)
+    }
+    phase("antibodies docking after an edit (3 s)", 3) {
+        store.tool = .erase
+        if !store.exp.sets.isEmpty, !store.exp.sets[0].secondaries.isEmpty {
+            let old = store.exp.sets[0].secondaries[0].name
+            store.exp.sets[0].secondaries[0].name = "488 g"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { store.exp.sets[0].secondaries[0].name = old }
+        }
+    }
+    phase("export: plate reader, then confetti (6 s)", 6) { store.celebrateExport() }
+    phase("app in the background (4 s)", 4) { store.tool = .paint(store.exp.sets[0].id); store.appActive = false }
+    beat.invalidate()
 }

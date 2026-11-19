@@ -84,6 +84,9 @@ final class AmbientClock {
         }
     }
 
+    /// Development: told how long each tick took, in milliseconds (the lag check).
+    static var probe: ((Double) -> Void)?
+
     private func fire() {
         let now = CACurrentMediaTime()
         let dt = min(0.1, now - last)
@@ -91,6 +94,7 @@ final class AmbientClock {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for b in boxes where b.client?.ambientActive == true { b.client?.tick(dt) }
         CATransaction.commit()
+        if let p = Self.probe { p((CACurrentMediaTime() - now) * 1000) }
     }
 }
 

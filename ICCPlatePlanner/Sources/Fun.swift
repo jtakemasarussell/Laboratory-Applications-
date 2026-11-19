@@ -184,49 +184,6 @@ struct WellSplash: View {
     }
 }
 
-// MARK: - Confetti (export)
-
-struct ConfettiLayer: View {
-    @EnvironmentObject var store: Store
-
-    var body: some View {
-        let start = store.confettiAt
-        let live = store.motion && Date().timeIntervalSince(start) < 3.4
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !live)) { ctx in
-            Canvas { g, size in
-                let a = ctx.date.timeIntervalSince(start)
-                guard store.motion, a >= 0, a < 3.3 else { return }
-                let fade = a > 2.5 ? 1 - (a - 2.5) / 0.8 : 1
-                for i in 0..<110 {
-                    let left = i % 2 == 0
-                    let x0 = size.width * (left ? 0.06 : 0.94)
-                    let y0 = size.height + 10
-                    let t = a - hash01(i, 1) * 0.35
-                    guard t > 0 else { continue }
-                    let vx = (240 + 520 * hash01(i, 2)) * (left ? 1 : -1)
-                    let vy = -(760 + 520 * hash01(i, 3))
-                    let x = x0 + CGFloat(vx * t * (1 - 0.18 * t))
-                    let y = y0 + CGFloat(vy * t + 0.5 * 1150 * t * t)
-                    guard y < size.height + 30 else { continue }
-                    let s = CGFloat(5 + 6 * hash01(i, 4))
-                    let color = funColors[i % funColors.count].opacity(fade)
-                    var l = g
-                    l.translateBy(x: x, y: y)
-                    l.rotate(by: .radians(t * (4 + 6 * hash01(i, 5)) * (hash01(i, 6) > 0.5 ? 1 : -1)))
-                    switch i % 5 {
-                    case 0: l.stroke(antibodyPath(s * 2), with: .color(color), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
-                    case 1: l.fill(dropPath(.zero, s * 0.6), with: .color(color))
-                    case 2: l.fill(Path(CGRect(x: -s, y: -s * 0.35, width: s * 2, height: s * 0.7)), with: .color(color))
-                    case 3: l.fill(starPath(.zero, s), with: .color(color))
-                    default: l.fill(Path(ellipseIn: CGRect(x: -s * 0.55, y: -s * 0.55, width: s * 1.1, height: s * 1.1)), with: .color(color))
-                    }
-                }
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
 extension View {
     /// Digits roll to their new value (an odometer) when `value` changes.
     func rolling<V: Equatable>(_ value: V, _ on: Bool) -> some View {
