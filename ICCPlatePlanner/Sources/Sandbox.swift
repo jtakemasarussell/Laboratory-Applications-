@@ -824,11 +824,14 @@ extension Store {
         return exp.sets.isEmpty ? nil : 0
     }
 
-    var previewInfo: PreviewInfo {
-        let demo = previewSetIndex == nil
+    var previewInfo: PreviewInfo { previewInfo(for: previewSetIndex) }
+
+    /// What the scope shows for stain `setIndex` (nil: the demo).
+    func previewInfo(for setIndex: Int?) -> PreviewInfo {
+        let demo = setIndex == nil
         let set: StainSet
-        let index = previewSetIndex ?? 0
-        if let i = previewSetIndex { set = exp.sets[i] } else {
+        let index = setIndex ?? 0
+        if let i = setIndex { set = exp.sets[i] } else {
             let lib = Library.seed
             set = StainSet(primaries: [lib.primaries[0], lib.primaries[1]], secondaries: [lib.secondaries[0], lib.secondaries[1]])
         }

@@ -649,6 +649,7 @@ struct PlateSection: View {
     // tilt wrapper and the hologram (which observe them) should redraw, never this whole card
     private let tiltBox = State(initialValue: TiltModel())
     private let hoverBox = State(initialValue: HoverFlag())
+    private let holoBox = State(initialValue: HoloController())
     private var tilt: TiltModel { tiltBox.wrappedValue }
     private var hover: HoverFlag { hoverBox.wrappedValue }
 
@@ -788,7 +789,11 @@ struct PlateSection: View {
 
     private func toolButton<L: View>(_ t: Tool, _ color: Color, @ViewBuilder label: () -> L) -> some View {
         let on = store.tool == t
-        return Button { store.tool = t } label: {
+        return Button {
+            // the selected stain clicked again: show its hologram now
+            if on, case .paint = t { store.hologramRequest += 1 }
+            store.tool = t
+        } label: {
             HStack(spacing: 6) { label() }
                 .lineLimit(1)
                 .fixedSize()            // never squeezed: a full row wraps to the next instead
@@ -861,11 +866,7 @@ struct PlateSection: View {
         }
         .overlay(GlintLane(stained: (0..<96).filter { w in store.exp.wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
                     .allowsHitTesting(false))
-        .overlay(HologramProjector(hover: hover, cw: cw, ch: ch))
-        .overlay(PlateReaderSweep(at: store.readerAt,
-                                  wells: (0..<96).compactMap { w in store.exp.wells[w].flatMap { ids.firstIndex(of: $0) }.map { ReaderWell(index: w, hex: fills[$0]) } },
-                                  cw: cw, ch: ch, on: store.motion)
-                    .allowsHitTesting(false))
+        .overlay(HologramProjector(hover: hover, holo: holoBox.wrappedValue, cw: cw, ch: ch))
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)

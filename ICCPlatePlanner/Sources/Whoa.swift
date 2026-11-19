@@ -202,7 +202,7 @@ let readerSweepLength = 1.85
 final class PlateReaderView: NSView {
     private var ran = Date.distantPast
     private static var blooms: [String: CGImage] = [:]
-    private static let lens: CGImage? = renderImage(CGSize(width: 64, height: 64), screenScale) { c in
+    static let lens: CGImage? = renderImage(CGSize(width: 64, height: 64), screenScale) { c in
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let ctr = CGPoint(x: 32, y: 32)
         // the light it throws on the plate
@@ -528,16 +528,77 @@ struct TiltPlate<Content: View>: View {
 
 // MARK: - The hologram over a stained well
 //
-// Pick a stain and one of its wells (the one nearest the middle of its block) becomes a projector: a beam
-// rises from it into a floating, cyan scope where the confocal scan plays: the laser line draws DAPI, then
-// 488, 594 and 647, one channel at a time, and a white pass sweeps in the merge. It folds back into its
-// well while the pointer is over the plate, so it never covers the wells you are painting.
+// Pick a stain and, once you have left the plate for a moment, one of its wells (the one nearest the
+// middle of its block) becomes a projector: a beam reaches up to a cyan scope docked above the plate's
+// top-right corner, out of the way of the wells, where the confocal scan plays once: the laser line
+// draws DAPI, then 488, 594 and 647, one channel at a time, and a white pass sweeps in the merge. Then it
+// folds back into its well. It waits while you work on the plate, and the same stain does not pop up
+// again for a while; clicking the selected stain's button again shows it on purpose.
+
+/// When the hologram shows: after a pause off the plate, once per stain per cooldown, for one scan.
+final class HoloController: ObservableObject {
+    @Published private(set) var shown: UUID?
+    /// Bumped each time it shows, so the scan starts from the beginning.
+    @Published private(set) var plays = 0
+    static let dwell = 1.5, cooldown = 30.0
+    private var lastShown: [UUID: Date] = [:]
+    private var pending: DispatchWorkItem?
+    private var hideWork: DispatchWorkItem?
+    private var selected: UUID?
+    private var hovering = false
+    private var enabled = true
+
+    /// Called whenever the stain, the pointer or the setting changes.
+    func update(selected: UUID?, hovering: Bool, enabled: Bool, length: Double) {
+        let changed = selected != self.selected
+        self.selected = selected; self.hovering = hovering; self.enabled = enabled
+        if hovering || selected == nil || !enabled {
+            pending?.cancel(); pending = nil
+            hide()
+            return
+        }
+        if shown != nil && shown != selected { hide() }
+        if shown == selected { return }
+        if changed || pending == nil { schedule(force: false, length: length) }
+    }
+
+    /// The selected stain's button clicked again: show it now, cooldown or not.
+    func request(length: Double) {
+        guard selected != nil, !hovering, enabled else { return }
+        schedule(force: true, length: length)
+    }
+
+    private func schedule(force: Bool, length: Double) {
+        pending?.cancel(); pending = nil
+        guard let id = selected else { return }
+        if !force, let t = lastShown[id], Date().timeIntervalSince(t) < Self.cooldown { return }
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.selected == id, !self.hovering, self.enabled else { return }
+            self.pending = nil
+            self.lastShown[id] = Date()
+            self.plays += 1
+            self.shown = id
+            self.hideWork?.cancel()
+            let h = DispatchWorkItem { [weak self] in if self?.shown == id { self?.hide() } }
+            self.hideWork = h
+            DispatchQueue.main.asyncAfter(deadline: .now() + length, execute: h)
+        }
+        pending = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + (force ? 0.05 : Self.dwell), execute: w)
+    }
+
+    private func hide() {
+        hideWork?.cancel(); hideWork = nil
+        if shown != nil { shown = nil }
+    }
+}
 
 struct HologramProjector: View {
     @EnvironmentObject var store: Store
     @ObservedObject var hover: HoverFlag
+    @ObservedObject var holo: HoloController
     let cw: CGFloat, ch: CGFloat
-    static let scope: CGFloat = 212
+    static let scope: CGFloat = 190
 
     /// The selected stain and the well it projects from.
     private var anchor: (set: UUID, well: Int)? {
@@ -555,21 +616,30 @@ struct HologramProjector: View {
     /// The last place it projected from, so it can fold away where it was.
     private static var lastAnchor: (set: UUID, well: Int)?
 
+    /// One pass of the scan: each channel, the merge, and a moment to look at it.
+    private func playLength(_ info: PreviewInfo) -> Double { 0.6 + Double(info.channels.count) * 1.6 + 4.2 }
+
+    private func sync() {
+        holo.update(selected: anchor?.set, hovering: hover.on, enabled: store.showHologram && store.motion,
+                    length: playLength(store.previewInfo))
+    }
+
     var body: some View {
         let W = cw * 12, H = ch * 8
-        let live = hover.on ? nil : anchor
+        let found = anchor
+        let live = found.flatMap { holo.shown == $0.set ? $0 : nil }
         if let live { Self.lastAnchor = live }
         let a = live ?? Self.lastAnchor
         let visible = live != nil
-        // always in the view tree (built once); picking a stain only moves, fades and scales it
+        // always in the view tree (built once); showing it only fades and scales it out of its well
         return ZStack {
             if let a {
                 let i = a.well / 12, j = a.well % 12
                 let well = CGPoint(x: (CGFloat(j) + 0.5) * cw, y: (CGFloat(i) + 0.5) * ch)
                 let S = Self.scope
-                let up = i >= 1                       // upwards, over the toolbars; only row A projects down
-                let cx = min(max(well.x, S / 2 - 6), W - S / 2 + 6)
-                let cy = up ? well.y - ch / 2 - 22 - S / 2 : well.y + ch / 2 + 22 + S / 2
+                // docked above the plate's top-right corner, clear of the wells
+                let cx = W - S / 2 - 4
+                let cy = -S / 2 - 66
                 let info = store.previewInfo
                 ZStack {
                     // the light pooled on the well
@@ -578,11 +648,11 @@ struct HologramProjector: View {
                                              center: .center, startRadius: 0, endRadius: cw * 0.6))
                         .frame(width: cw * 1.2, height: ch * 1.1)
                         .position(well)
-                    // the beam up (or down) to the scope
-                    HologramBeam(from: well, half: cw * 0.28, to: CGPoint(x: cx, y: cy + (up ? S / 2 - 6 : -S / 2 + 6)), wide: S * 0.42)
-                        .fill(LinearGradient(colors: [Color(hex: "9BF0FF").opacity(0.42), Color(hex: "38C8F0").opacity(0.08)],
-                                             startPoint: up ? .bottom : .top, endPoint: up ? .top : .bottom))
-                    StainingPreview(info: info, active: store.ambient && visible, replay: store.previewReplay, hologram: true)
+                    // the beam up to the scope
+                    HologramBeam(from: well, half: cw * 0.22, to: CGPoint(x: cx, y: cy + S / 2 - 8), wide: S * 0.36)
+                        .fill(LinearGradient(colors: [Color(hex: "9BF0FF").opacity(0.30), Color(hex: "38C8F0").opacity(0.05)],
+                                             startPoint: .bottom, endPoint: .top))
+                    StainingPreview(info: info, active: store.ambient && visible, replay: holo.plays, hologram: true)
                         .frame(width: S, height: S)
                         .position(x: cx, y: cy)
                     Text(info.title.uppercased() + "  ·  " + info.subtitle)
@@ -592,8 +662,8 @@ struct HologramProjector: View {
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(Capsule().fill(Color(hex: "04172A").opacity(0.82)))
                         .overlay(Capsule().stroke(Color(hex: "9BF0FF").opacity(0.6), lineWidth: 0.8))
-                        .frame(maxWidth: S + 60)
-                        .position(x: cx, y: up ? cy - S / 2 - 10 : cy + S / 2 + 10)
+                        .frame(maxWidth: S + 40)
+                        .position(x: cx, y: cy - S / 2 - 10)
                 }
                 .frame(width: W, height: H)
                 .scaleEffect(visible ? 1 : 0.05, anchor: UnitPoint(x: well.x / W, y: well.y / H))
@@ -601,9 +671,16 @@ struct HologramProjector: View {
             }
         }
         .frame(width: W, height: H)
-        .animation(store.motion ? .spring(response: 0.42, dampingFraction: 0.78) : nil, value: visible)
-        .animation(store.motion ? .spring(response: 0.42, dampingFraction: 0.78) : nil, value: a?.well)
+        .animation(store.motion ? .spring(response: 0.5, dampingFraction: 0.8) : nil, value: visible)
         .allowsHitTesting(false)
+        .onAppear { sync() }
+        .onChange(of: found?.set) { _ in sync() }
+        .onChange(of: hover.on) { _ in sync() }
+        .onChange(of: store.showHologram) { _ in sync() }
+        .onChange(of: store.hologramRequest) { _ in
+            sync()
+            holo.request(length: playLength(store.previewInfo))
+        }
     }
 }
 

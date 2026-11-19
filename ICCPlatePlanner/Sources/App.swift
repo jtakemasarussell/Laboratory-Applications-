@@ -41,6 +41,10 @@ enum Main {
         }
         if let i = a.firstIndex(of: "--qc"), a.count > i + 1 { plateQC(a[i + 1]); return }
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
+        if let i = a.firstIndex(of: "--export-scan-snapshot"), a.count > i + 2, let t = Double(a[i + 2]) {
+            exportScanSnapshot(a[i + 1], at: t, plate: a.firstIndex(of: "--plate").flatMap { a.count > $0 + 1 ? a[$0 + 1] : nil })
+            return
+        }
         if let i = a.firstIndex(of: "--qc-state"), a.count > i + 1 {
             // the app's own saved state from the version before loads in this one, with nothing lost
             let d = try! Data(contentsOf: URL(fileURLWithPath: a[i + 1]))
@@ -190,6 +194,7 @@ struct PlannerApp: App {
                 Divider()
                 Toggle("Animations", isOn: $store.animations)
                 Toggle("Trackpad Feedback", isOn: $store.haptics)
+                Toggle("Show Hologram", isOn: $store.showHologram)
                 Toggle("Show Splash at Launch", isOn: Binding(get: { SplashController.enabledAtLaunch }, set: { SplashController.enabledAtLaunch = $0 }))
             }
         }
@@ -255,6 +260,12 @@ final class Store: ObservableObject {
     @Published var animations: Bool = UserDefaults.standard.object(forKey: "animations") as? Bool ?? true {
         didSet { if persist { UserDefaults.standard.set(animations, forKey: "animations") } }
     }
+    /// The confocal hologram over the selected stain's well (File menu).
+    @Published var showHologram: Bool = UserDefaults.standard.object(forKey: "showHologram") as? Bool ?? true {
+        didSet { if persist { UserDefaults.standard.set(showHologram, forKey: "showHologram") } }
+    }
+    /// Bumped when the selected stain's button is clicked again, to show its hologram now.
+    @Published var hologramRequest = 0
     /// Well the Duplicate tool is copying (row scope copies its whole row); nil = pick one first.
     @Published var duplicateSource: Int? = nil
     @Published var duplicateScope: DuplicateScope = .well
@@ -270,8 +281,6 @@ final class Store: ObservableObject {
     @Published var appActive = false
     /// When the export confetti went off.
     @Published var confettiAt = Date.distantPast
-    /// When the plate reader last swept the plate (export).
-    @Published var readerAt = Date.distantPast
     /// The stain whose wells stand out on the plate while the pointer rests on its card or legend row.
     @Published var spotlightSet: UUID? = nil
     /// Bumped to play the staining preview from the start.
@@ -693,13 +702,8 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The plate reader sweeps the stained wells, then the confetti flies.
-    func celebrateExport() {
-        let now = Date()
-        let stained = exp.wells.contains { w in w.map { id in exp.sets.contains { $0.id == id } } ?? false }
-        if stained && motion { readerAt = now }
-        confettiAt = stained && motion ? now.addingTimeInterval(readerSweepLength - 0.15) : now
-    }
+    /// Whether any well holds a stain that still exists.
+    var hasStainedWells: Bool { exp.wells.contains { w in w.map { id in exp.sets.contains { $0.id == id } } ?? false } }
 
     func export() {
         NSApp.keyWindow?.makeFirstResponder(nil)   // commit any field still being edited
@@ -711,10 +715,18 @@ final class Store: ObservableObject {
         do {
             try buildWorkbook(exp, settings).write(to: url, options: .atomic)
             library.remember(exp.sets)
-            showToast(exportLines.randomElement() ?? "Exported.")
-            celebrateExport()
             tap(.levelChange)
-            if openAfterExport { NSWorkspace.shared.open(url) }
+            if motion && hasStainedWells {
+                // the microscope acquires the plate in its own window; Excel opens when it is done
+                ExportScanController.shared.present(self, url: url) { [weak self] in
+                    self?.confettiAt = Date()
+                    self?.showToast(exportLines.randomElement() ?? "Exported.")
+                }
+            } else {
+                showToast(exportLines.randomElement() ?? "Exported.")
+                confettiAt = Date()
+                if openAfterExport { NSWorkspace.shared.open(url) }
+            }
         } catch {
             errorAlert("Could not save the Excel file", error)
         }
@@ -791,7 +803,7 @@ func snapshot(_ path: String) {
         // the hologram over stain k, `t` seconds into the protocol
         store.tool = .paint(store.exp.sets[k - 1].id)
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        RunLoop.main.run(until: Date().addingTimeInterval(HoloController.dwell + 0.9))
         func find(_ v: NSView) -> StainingPreviewView? { (v as? StainingPreviewView) ?? v.subviews.lazy.compactMap(find).first }
         find(host)?.preview(at: t)
     }
@@ -870,7 +882,7 @@ func lagCheck(_ platePath: String) {
     }
     phase("plate idle, no stain picked (8 s)", 8)
     phase("hologram scanning over a stain (14 s)", 14) { store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id) }
-    phase("hologram for a stain picked again (3 s)", 3) {
+    phase("same stain picked again within the cooldown: stays away (3 s)", 3) {
         store.tool = .erase
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
@@ -893,7 +905,9 @@ func lagCheck(_ platePath: String) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { store.exp.sets[0].secondaries[0].name = old }
         }
     }
-    phase("export: plate reader, then confetti (6 s)", 6) { store.celebrateExport() }
+    phase("export: the acquisition window (7 s)", 7) {
+        ExportScanController.shared.present(store, url: URL(fileURLWithPath: NSTemporaryDirectory() + "lagcheck.xlsx")) { store.confettiAt = Date() }
+    }
     phase("app in the background (4 s)", 4) { store.tool = .paint(store.exp.sets[0].id); store.appActive = false }
     beat.invalidate()
 }
