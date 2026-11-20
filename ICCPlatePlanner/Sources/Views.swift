@@ -880,7 +880,7 @@ struct PlateGrid: View {
                             && (store.duplicateScope == .row ? store.duplicateSource! / 12 == i : store.duplicateSource == w)
                         WellCell(fill: k.map { fills[$0] }, accent: k.map { accents[$0] }, label: store.exp.label(w),
                                  selected: store.tool == .text && store.selectedWell == w, dupSource: dupSource,
-                                 dim: spot != nil && wells[w] != spot, glow: spot != nil && wells[w] == spot,
+                                 dim: false, glow: false,      // the spotlight is drawn over the grid (SpotVeil)
                                  motion: store.motion, cw: cw, ch: ch)
                             .equatable()
                     }
@@ -888,6 +888,10 @@ struct PlateGrid: View {
             }
         }
         .overlay(GlintLane(stained: (0..<96).filter { w in wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
+                    .allowsHitTesting(false))
+        .overlay(SpotVeil(wells: spot.map { id in (0..<96).filter { wells[$0] == id } } ?? [],
+                          hex: spot.flatMap { id in sets.firstIndex { $0.id == id } }.map { setAccentHex(sets[$0], $0) } ?? "4A78B8",
+                          cw: cw, ch: ch, motion: store.motion)
                     .allowsHitTesting(false))
         .fxGrid()
         .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch))

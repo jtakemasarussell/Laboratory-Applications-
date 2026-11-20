@@ -419,16 +419,113 @@ final class FxView: NSView {
 
 // MARK: - Lights down while the hologram plays
 
-/// A veil over the rest of the window while the hologram scans, like a microscope room with the lights
-/// off; it lifts as the hologram folds away.
+/// A faint veil over the rest of the window while the hologram scans, like a microscope room with the
+/// lights lowered; it lifts as the hologram folds away. The fade is Core Animation's, so it glides
+/// instead of redrawing the window frame by frame.
 struct LightsDim: View {
     @ObservedObject var holo = HoloController.shared
     @EnvironmentObject var store: Store
     var body: some View {
-        Color(hex: "02060D")
-            .opacity(holo.shown != nil && store.motion ? 0.22 : 0)
-            .animation(.easeInOut(duration: 0.7), value: holo.shown != nil)
-            .allowsHitTesting(false)
+        FadeVeil(on: holo.shown != nil && store.motion, alpha: 0.12, duration: 0.9).allowsHitTesting(false)
+    }
+}
+
+struct FadeVeil: NSViewRepresentable {
+    let on: Bool
+    let alpha: Float
+    let duration: Double
+    func makeNSView(context: Context) -> FadeVeilView { FadeVeilView(frame: .zero) }
+    func updateNSView(_ v: FadeVeilView, context: Context) { v.fade(on ? alpha : 0, duration) }
+}
+
+final class FadeVeilView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        layer = CALayer()
+        wantsLayer = true
+        layer?.backgroundColor = cg("02060D")
+        layer?.opacity = 0
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    func fade(_ to: Float, _ d: Double) {
+        guard let l = layer, l.opacity != to else { return }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(d)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        l.opacity = to
+        CATransaction.commit()
+    }
+}
+
+// MARK: - Spotlight on a stain's wells
+
+/// Pointing at a stain's card or summary row: the other wells sink under a soft veil and the stain's own
+/// wells get a glowing outline. Drawn as two shape layers and faded by Core Animation, instead of
+/// animating all 96 wells in SwiftUI (which looked choppy).
+struct SpotVeil: NSViewRepresentable {
+    let wells: [Int]
+    let hex: String
+    let cw: CGFloat, ch: CGFloat
+    let motion: Bool
+    func makeNSView(context: Context) -> SpotVeilView { SpotVeilView(frame: .zero) }
+    func updateNSView(_ v: SpotVeilView, context: Context) { v.show(wells, hex: hex, cw: cw, ch: ch, motion: motion) }
+}
+
+final class SpotVeilView: NSView {
+    private let space = CALayer(), veil = CAShapeLayer(), rings = CAShapeLayer()
+    private var shown: [Int] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        layer = CALayer()
+        wantsLayer = true
+        space.isGeometryFlipped = true
+        layer?.addSublayer(space)
+        veil.fillRule = .evenOdd
+        veil.fillColor = cg("05090F", 0.42)
+        rings.fillColor = nil
+        rings.lineWidth = 2
+        rings.shadowOpacity = 0.8
+        rings.shadowRadius = 5
+        rings.shadowOffset = .zero
+        for l in [veil, rings] { l.opacity = 0; space.addSublayer(l) }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        space.frame = bounds
+        veil.frame = bounds; rings.frame = bounds
+        CATransaction.commit()
+    }
+
+    func show(_ wells: [Int], hex: String, cw: CGFloat, ch: CGFloat, motion: Bool) {
+        guard wells != shown else { return }
+        shown = wells
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if !wells.isEmpty {
+            let holes = CGMutablePath(), outlines = CGMutablePath()
+            holes.addRect(CGRect(x: -2, y: -2, width: cw * 12 + 4, height: ch * 8 + 4))
+            for w in wells {
+                let r = CGRect(x: CGFloat(w % 12) * cw + 2.5, y: CGFloat(w / 12) * ch + 2.5, width: cw - 5, height: ch - 5)
+                holes.addRoundedRect(in: r, cornerWidth: 8, cornerHeight: 8)
+                outlines.addRoundedRect(in: r.insetBy(dx: -1, dy: -1), cornerWidth: 9, cornerHeight: 9)
+            }
+            veil.path = holes
+            rings.path = outlines
+            rings.strokeColor = cg(hex)
+            rings.shadowColor = cg(hex)
+        }
+        CATransaction.commit()
+        let to: Float = wells.isEmpty ? 0 : 1
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(motion ? 0.35 : 0)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        veil.opacity = to; rings.opacity = to
+        CATransaction.commit()
     }
 }
 

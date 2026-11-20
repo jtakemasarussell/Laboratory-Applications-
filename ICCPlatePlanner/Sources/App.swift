@@ -961,6 +961,10 @@ func lagCheck(_ platePath: String) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { store.exp.sets[0].secondaries[0].name = old }
         }
     }
+    phase("spotlight a stain, then let go (3 s)", 3) {
+        store.spotlightSet = store.exp.sets[0].id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { store.spotlightSet = nil }
+    }
     phase("antibodies fly to a stain's wells (3 s)", 3) {
         store.fxFly(store.exp.sets[0].id)
     }
@@ -1104,6 +1108,12 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
         store.exp.sets[0].secondaries[0].name = before
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     }
+    // pointing at Stain 2: its wells stay lit, the others sink
+    store.spotlightSet = store.exp.sets[min(1, store.exp.sets.count - 1)].id
+    RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+    shot("spot")
+    store.spotlightSet = nil
+    RunLoop.main.run(until: Date().addingTimeInterval(0.6))
     // the hologram plays and the room dims
     store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
     RunLoop.main.run(until: Date().addingTimeInterval(HoloController.dwell + 1.4))
