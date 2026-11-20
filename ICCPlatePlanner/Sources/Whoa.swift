@@ -528,14 +528,14 @@ struct TiltPlate<Content: View>: View {
 
 // MARK: - The hologram over a stained well
 //
-// Pick a stain and, once you have left the plate for a moment, one of its wells (the one nearest the
-// middle of its block) becomes a projector: a beam reaches up to a cyan scope docked above the plate's
+// Pick a stain and, a moment later, one of its wells (the one nearest the middle of its block) becomes
+// a projector: a beam reaches up to a cyan scope docked above the plate's
 // top-right corner, out of the way of the wells, where the confocal scan plays once: the laser line
 // draws DAPI, then 488, 594 and 647, one channel at a time, and a white pass sweeps in the merge. Then it
-// folds back into its well. It waits while you work on the plate, and the same stain does not pop up
-// again for a while; clicking the selected stain's button again shows it on purpose.
+// folds back into its well, wherever the pointer is. The same stain does not pop up again for a while;
+// clicking the selected stain's button again shows it on purpose.
 
-/// When the hologram shows: after a pause off the plate, once per stain per cooldown, for one scan.
+/// When the hologram shows: a moment after a stain is picked, once per stain per cooldown, for one scan.
 final class HoloController: ObservableObject {
     @Published private(set) var shown: UUID?
     /// Bumped each time it shows, so the scan starts from the beginning.
@@ -552,7 +552,8 @@ final class HoloController: ObservableObject {
     func update(selected: UUID?, hovering: Bool, enabled: Bool, length: Double) {
         let changed = selected != self.selected
         self.selected = selected; self.hovering = hovering; self.enabled = enabled
-        if hovering || selected == nil || !enabled {
+        // the pointer no longer matters: once shown it plays its scan to the end, wherever the pointer is
+        if selected == nil || !enabled {
             pending?.cancel(); pending = nil
             hide()
             return
@@ -564,7 +565,7 @@ final class HoloController: ObservableObject {
 
     /// The selected stain's button clicked again: show it now, cooldown or not.
     func request(length: Double) {
-        guard selected != nil, !hovering, enabled else { return }
+        guard selected != nil, enabled else { return }
         schedule(force: true, length: length)
     }
 
@@ -573,7 +574,7 @@ final class HoloController: ObservableObject {
         guard let id = selected else { return }
         if !force, let t = lastShown[id], Date().timeIntervalSince(t) < Self.cooldown { return }
         let w = DispatchWorkItem { [weak self] in
-            guard let self, self.selected == id, !self.hovering, self.enabled else { return }
+            guard let self, self.selected == id, self.enabled else { return }
             self.pending = nil
             self.lastShown[id] = Date()
             self.plays += 1
@@ -620,7 +621,7 @@ struct HologramProjector: View {
     private func playLength(_ info: PreviewInfo) -> Double { 0.6 + Double(info.channels.count) * 1.6 + 4.2 }
 
     private func sync() {
-        holo.update(selected: anchor?.set, hovering: hover.on, enabled: store.showHologram && store.motion,
+        holo.update(selected: anchor?.set, hovering: false, enabled: store.showHologram && store.motion,
                     length: playLength(store.previewInfo))
     }
 
@@ -675,7 +676,6 @@ struct HologramProjector: View {
         .allowsHitTesting(false)
         .onAppear { sync() }
         .onChange(of: found?.set) { _ in sync() }
-        .onChange(of: hover.on) { _ in sync() }
         .onChange(of: store.showHologram) { _ in sync() }
         .onChange(of: store.hologramRequest) { _ in
             sync()
