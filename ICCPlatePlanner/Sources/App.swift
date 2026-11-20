@@ -41,6 +41,7 @@ enum Main {
         }
         if let i = a.firstIndex(of: "--qc"), a.count > i + 1 { plateQC(a[i + 1]); return }
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
+        if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
         if let i = a.firstIndex(of: "--export-scan-snapshot"), a.count > i + 2, let t = Double(a[i + 2]) {
             exportScanSnapshot(a[i + 1], at: t, plate: a.firstIndex(of: "--plate").flatMap { a.count > $0 + 1 ? a[$0 + 1] : nil })
             return
@@ -244,7 +245,7 @@ func decodePlate(_ data: Data) throws -> Experiment {
 }
 
 final class Store: ObservableObject {
-    @Published var exp: Experiment { didSet { recordUndo(oldValue); save() } }
+    @Published var exp: Experiment { didSet { recordUndo(oldValue); save(); fxAfterChange(oldValue) } }
     @Published var settings: Settings { didSet { save() } }
     @Published var library: Library { didSet { save() } }
     @Published var tool: Tool = .erase {
@@ -266,6 +267,13 @@ final class Store: ObservableObject {
     }
     /// Bumped when the selected stain's button is clicked again, to show its hologram now.
     @Published var hologramRequest = 0
+    /// How many times each stain's chip has shaken (its pairing just went wrong).
+    @Published var shakes: [UUID: Int] = [:]
+    private var flyWork: [UUID: DispatchWorkItem] = [:]
+    private var clashWork: DispatchWorkItem?
+    private var lastVerdicts: [UUID: Verdict] = [:]
+    /// Effects stay quiet while a plate is being loaded.
+    var fxQuietUntil = Date.distantPast
     /// Well the Duplicate tool is copying (row scope copies its whole row); nil = pick one first.
     @Published var duplicateSource: Int? = nil
     @Published var duplicateScope: DuplicateScope = .well
@@ -461,7 +469,10 @@ final class Store: ObservableObject {
             if dragErases == nil { dragErases = (exp.wells[w] == id) }
             let new: UUID? = dragErases! ? nil : id
             if dragErases! && exp.wells[w] != id { return }
-            if exp.wells[w] != new { setWell(w, new) }
+            if exp.wells[w] != new {
+                setWell(w, new)
+                if new != nil { fxPaint(w, id) }
+            }
         case .erase:
             if exp.wells[w] != nil { setWell(w, nil) }
         case .text:
@@ -580,7 +591,7 @@ final class Store: ObservableObject {
         validateTool()
     }
 
-    func endDrag() { dragErases = nil; dupDrag = nil }
+    func endDrag() { dragErases = nil; dupDrag = nil; FxCenter.shared.view?.pipetteAway() }
 
     /// Changing which wells are stained puts the blocking buffer back on automatic,
     /// so a number typed for an earlier layout never lingers.
@@ -692,7 +703,9 @@ final class Store: ObservableObject {
         do {
             let loaded = try decodePlate(Data(contentsOf: url))
             lastChange = .distantPast   // loading always starts a new undo group
+            fxQuietUntil = Date().addingTimeInterval(1.2)
             exp = loaded
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.fxThaw() }
             selectedWell = nil
             duplicateSource = nil
             validateTool()
@@ -905,9 +918,137 @@ func lagCheck(_ platePath: String) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { store.exp.sets[0].secondaries[0].name = old }
         }
     }
+    phase("antibodies fly to a stain's wells (3 s)", 3) {
+        store.fxFly(store.exp.sets[0].id)
+    }
+    phase("frost melts off an opened plate (4 s)", 4) { store.fxThaw() }
+    phase("painting a row with the pipette (3 s)", 3) {
+        store.tool = .paint(store.exp.sets[0].id)
+        for (n, w) in (84..<96).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(n)) { store.touch(w) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            store.endDrag()
+            for w in 84..<96 { store.exp.wells[w] = nil }
+        }
+    }
     phase("export: the acquisition window (7 s)", 7) {
         ExportScanController.shared.present(store, url: URL(fileURLWithPath: NSTemporaryDirectory() + "lagcheck.xlsx")) { store.confettiAt = Date() }
     }
     phase("app in the background (4 s)", 4) { store.tool = .paint(store.exp.sets[0].id); store.appActive = false }
     beat.invalidate()
+}
+
+
+// MARK: - Effects across the window (Fx.swift)
+
+extension Store {
+    /// After every change to the plan: antibodies fly to a stain whose antibodies changed, and a stain
+    /// whose pairing has just gone wrong sounds the alarm.
+    func fxAfterChange(_ old: Experiment) {
+        let quiet = Date() < fxQuietUntil
+        if !quiet {
+            for set in exp.sets {
+                guard let o = old.sets.first(where: { $0.id == set.id }) else { continue }
+                func names(_ s: StainSet) -> [String] { s.primaries.map { $0.name } + ["|"] + s.secondaries.map { $0.name } }
+                guard names(o) != names(set) else { continue }
+                let added = set.primaries.count + set.secondaries.count > o.primaries.count + o.secondaries.count
+                let id = set.id
+                flyWork[id]?.cancel()
+                let w = DispatchWorkItem { [weak self] in self?.fxFly(id) }
+                flyWork[id] = w
+                // typing a name waits for a pause; adding an antibody flies at once
+                DispatchQueue.main.asyncAfter(deadline: .now() + (added ? 0.25 : 1.0), execute: w)
+            }
+        }
+        clashWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.fxCheckClash(quiet: quiet) }
+        clashWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
+    }
+
+    private func wellsOf(_ id: UUID) -> [Int] { (0..<96).filter { exp.wells[$0] == id } }
+
+    func fxFly(_ id: UUID) {
+        let fx = FxCenter.shared
+        guard motion, fx.usable, let k = exp.sets.firstIndex(where: { $0.id == id }), let card = fx.cardFrames[id] else { return }
+        let wells = wellsOf(id)
+        guard !wells.isEmpty else { return }
+        let step = max(1, wells.count / 8)
+        let targets = stride(from: 0, to: wells.count, by: step).prefix(8).map { fx.wellCenter(wells[$0]) }
+        let dyes = panel(exp.sets[k]).channels.filter { !$0.fluor.counterstain }.map { $0.fluor.hex }
+        fx.view?.fly(from: CGPoint(x: card.maxX - 70, y: card.minY + 46), to: targets, hexes: dyes.isEmpty ? [fillHex(exp.sets[k], k)] : dyes)
+    }
+
+    func fxCheckClash(quiet: Bool) {
+        var now: [UUID: Verdict] = [:]
+        for set in exp.sets { now[set.id] = panel(set).verdict }
+        defer { lastVerdicts = now }
+        guard !quiet, motion else { return }
+        let fx = FxCenter.shared
+        for (id, v) in now where v == .problem {
+            guard let before = lastVerdicts[id], before != .problem else { continue }
+            shakes[id, default: 0] += 1
+            tap(.generic)
+            if fx.usable { fx.view?.alarm(at: wellsOf(id).map { fx.wellCenter($0) }, cw: fx.cw, ch: fx.ch) }
+        }
+    }
+
+    func fxThaw() {
+        let fx = FxCenter.shared
+        guard motion, fx.usable else { return }
+        fx.view?.thaw(grid: fx.gridFrame, cw: fx.cw, ch: fx.ch)
+    }
+
+    func fxPaint(_ w: Int, _ id: UUID) {
+        if ProcessInfo.processInfo.environment["ICC_FX_PROBE"] == "nopip" { return }
+        let fx = FxCenter.shared
+        guard motion, fx.usable, let k = exp.sets.firstIndex(where: { $0.id == id }) else { return }
+        let hex = fillHex(exp.sets[k], k)
+        let dye = panel(exp.sets[k]).channels.first { !$0.fluor.counterstain }?.fluor.hex ?? hex
+        fx.view?.pipette(over: fx.gridFrame, col: w % 12, row: w / 12, cw: fx.cw, ch: fx.ch, hex: dye)
+        fx.view?.drop(at: fx.wellCenter(w), hex: hex, ch: fx.ch)
+    }
+}
+
+
+/// Development: the real window, photographed part-way through the antibody flight and the frost thaw.
+func fxShot(_ platePath: String, _ outPrefix: String) {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let store = Store(inMemory: sampleExperiment())
+    if let d = try? Data(contentsOf: URL(fileURLWithPath: platePath)), let e = try? decodePlate(d) { store.exp = e }
+    store.tool = .erase
+    let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: 1360, height: 900))
+    let win = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1360, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+    win.contentView = host
+    win.orderFrontRegardless()
+    store.appActive = true
+    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+    func shot(_ name: String) {
+        guard let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win.windowNumber), [.boundsIgnoreFraming, .bestResolution]) else { print("no capture"); return }
+        try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outPrefix + name + ".png"))
+    }
+    let fx = FxCenter.shared
+    print("grid frame:", fx.gridFrame, "fx view:", fx.view?.frame ?? .zero, "flipped:", fx.view?.isFlipped ?? false, "superview flipped:", fx.view?.superview?.isFlipped ?? false)
+    // the last stain (lowest wells) flies
+    let id = store.exp.sets[min(4, store.exp.sets.count - 1)].id
+    print("its wells:", (0..<96).filter { store.exp.wells[$0] == id }.map { "\(rowLetters[$0 / 12])\($0 % 12 + 1)" })
+    store.fxFly(id)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.75))
+    shot("fly")
+    RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+    store.fxThaw()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+    shot("frost1")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.9))
+    shot("frost2")
+    // the export window, part-way through the scan
+    ExportScanController.shared.present(store, url: URL(fileURLWithPath: NSTemporaryDirectory() + "fxshot.xlsx")) {}
+    RunLoop.main.run(until: Date().addingTimeInterval(2.6))
+    if let w = NSApp.windows.first(where: { $0 !== win && $0.isVisible }),
+       let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(w.windowNumber), [.boundsIgnoreFraming, .bestResolution]) {
+        try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outPrefix + "export.png"))
+    }
+    ExportScanController.shared.close()
 }

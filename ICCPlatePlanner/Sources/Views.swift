@@ -136,8 +136,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar()
-            OutputStrip()
+            HeaderBar().overlay(LightsDim())
+            OutputStrip().overlay(LightsDim())
             HStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -163,12 +163,13 @@ struct ContentView: View {
                     .animation(store.animations ? .spring(response: 0.42, dampingFraction: 0.82) : nil, value: store.exp.sets.map { $0.id })
                 }
                 .frame(width: 580)
+                .overlay(LightsDim())
                 GeometryReader { geo in
                     ScrollView([.vertical, .horizontal]) {
                         VStack(alignment: .leading, spacing: 14) {
                             PlateSection()
                                 .zIndex(1)      // the hologram floats over the cards below
-                            SummarySection()
+                            SummarySection().overlay(LightsDim())
                         }
                         .frame(width: max(geo.size.width - 16, 712))   // never narrower than the plate
                         .fixedSize(horizontal: false, vertical: true)
@@ -192,7 +193,11 @@ struct ContentView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: store.toast?.id)
             .allowsHitTesting(false)
         }
+        .overlay(FxOverlay().allowsHitTesting(false))
         .overlay(ConfettiLayer())
+        .coordinateSpace(name: fxSpace)
+        .onPreferenceChange(GridFrameKey.self) { FxCenter.shared.gridFrame = $0 }
+        .onPreferenceChange(CardFramesKey.self) { FxCenter.shared.cardFrames = $0 }
         .tint(Brand.navy)
         .preferredColorScheme(.light)   // the department look is a white page with navy accents
     }
@@ -585,6 +590,7 @@ struct StainCard: View {
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Brand.rule, lineWidth: 1))
                 .shadow(color: Brand.navy.opacity(0.10), radius: 7, x: 0, y: 2)
         )
+        .fxCard(setID)
     }
 }
 
@@ -649,7 +655,6 @@ struct PlateSection: View {
     // tilt wrapper and the hologram (which observe them) should redraw, never this whole card
     private let tiltBox = State(initialValue: TiltModel())
     private let hoverBox = State(initialValue: HoverFlag())
-    private let holoBox = State(initialValue: HoloController())
     private var tilt: TiltModel { tiltBox.wrappedValue }
     private var hover: HoverFlag { hoverBox.wrappedValue }
 
@@ -787,6 +792,11 @@ struct PlateSection: View {
         }
     }
 
+    private func shakeCount(_ t: Tool) -> Int {
+        if case .paint(let id) = t { return store.shakes[id] ?? 0 }
+        return 0
+    }
+
     private func toolButton<L: View>(_ t: Tool, _ color: Color, @ViewBuilder label: () -> L) -> some View {
         let on = store.tool == t
         return Button {
@@ -804,6 +814,8 @@ struct PlateSection: View {
                 .contentShape(Capsule())
                 .scaleEffect(on ? 1.05 : 1)
                 .animation(store.animations ? .spring(response: 0.28, dampingFraction: 0.55) : nil, value: on)
+                .modifier(Shake(animatableData: CGFloat(shakeCount(t))))
+                .animation(store.motion ? .linear(duration: 0.5) : nil, value: shakeCount(t))
                 .padding(3)             // room for the outline and the selected chip's grow
         }
         .buttonStyle(SquishStyle(on: store.motion))
@@ -866,7 +878,8 @@ struct PlateSection: View {
         }
         .overlay(GlintLane(stained: (0..<96).filter { w in store.exp.wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
                     .allowsHitTesting(false))
-        .overlay(HologramProjector(hover: hover, holo: holoBox.wrappedValue, cw: cw, ch: ch))
+        .fxGrid()
+        .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch))
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)

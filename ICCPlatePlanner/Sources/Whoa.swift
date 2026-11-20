@@ -537,6 +537,8 @@ struct TiltPlate<Content: View>: View {
 
 /// When the hologram shows: a moment after a stain is picked, once per stain per cooldown, for one scan.
 final class HoloController: ObservableObject {
+    /// One for the window: the plate projects it, the rest of the window dims for it.
+    static let shared = HoloController()
     @Published private(set) var shown: UUID?
     /// Bumped each time it shows, so the scan starts from the beginning.
     @Published private(set) var plays = 0
@@ -599,7 +601,7 @@ struct HologramProjector: View {
     @ObservedObject var hover: HoverFlag
     @ObservedObject var holo: HoloController
     let cw: CGFloat, ch: CGFloat
-    static let scope: CGFloat = 190
+    static let scope: CGFloat = 180
 
     /// The selected stain and the well it projects from.
     private var anchor: (set: UUID, well: Int)? {
@@ -640,7 +642,7 @@ struct HologramProjector: View {
                 let S = Self.scope
                 // docked above the plate's top-right corner, clear of the wells
                 let cx = W - S / 2 - 4
-                let cy = -S / 2 - 66
+                let cy = -S / 2 - 62          // its caption sits underneath, between it and the plate
                 let info = store.previewInfo
                 ZStack {
                     // the light pooled on the well
@@ -669,9 +671,9 @@ struct HologramProjector: View {
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color(hex: "04172A").opacity(0.85)))
                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color(hex: "9BF0FF").opacity(0.6), lineWidth: 0.8))
-                    .frame(maxWidth: S + 50)
-                    .frame(width: S + 50, height: 64, alignment: .bottom)     // grows upwards from just above the scope
-                    .position(x: cx - 12, y: cy - S / 2 - 36)
+                    .frame(maxWidth: S + 60)
+                    .frame(width: S + 60, height: 48, alignment: .top)     // under the scope, growing downwards
+                    .position(x: cx - 14, y: cy + S / 2 + 4 + 24)
                 }
                 .frame(width: W, height: H)
                 .scaleEffect(visible ? 1 : 0.05, anchor: UnitPoint(x: well.x / W, y: well.y / H))

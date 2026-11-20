@@ -213,7 +213,6 @@ final class ExportScanView: AmbientLayerView {
         self.wells = wells; self.infos = infos; self.setTitles = setTitles; self.file = file
         self.motion = motion; self.onDone = onDone
         per = min(0.32, max(0.07, 4.2 / Double(max(1, wells.count))))
-        layer?.isGeometryFlipped = true
         build()
     }
 
@@ -227,6 +226,7 @@ final class ExportScanView: AmbientLayerView {
         defer { CATransaction.commit() }
         let W = bounds.width, H = bounds.height
         stage.frame = bounds
+        stage.isGeometryFlipped = true      // top-down, on a sublayer (AppKit resets the flip on the view's own layer)
         root.addSublayer(stage)
         let plateRect = CGRect(x: origin.x - 34, y: origin.y - 34, width: pitch * 12 + 52, height: pitch * 8 + 50)
         stage.contents = renderImage(bounds.size, screenScale) { c in
@@ -570,10 +570,7 @@ func exportScanSnapshot(_ path: String, at t: Double, plate: String?) {
           let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
                               space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
     ctx.scaleBy(x: scale, y: scale)
-    ctx.saveGState()
-    ctx.translateBy(x: 0, y: size.height); ctx.scaleBy(x: 1, y: -1)     // the scene's layers are laid out top-down
     v.layer?.render(in: ctx)
-    ctx.restoreGState()
     ctx.saveGState()
     ctx.translateBy(x: v.scope.frame.minX, y: v.scope.frame.minY)
     v.scope.layer?.render(in: ctx)
