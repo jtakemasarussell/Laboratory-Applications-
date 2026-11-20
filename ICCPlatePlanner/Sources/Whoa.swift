@@ -656,15 +656,22 @@ struct HologramProjector: View {
                     StainingPreview(info: info, active: store.ambient && visible, replay: holo.plays, hologram: true)
                         .frame(width: S, height: S)
                         .position(x: cx, y: cy)
-                    Text(info.title.uppercased() + "  ·  " + info.subtitle)
-                        .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.6)
-                        .foregroundColor(Color(hex: "D6FAFF"))
-                        .lineLimit(1).truncationMode(.tail)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Capsule().fill(Color(hex: "04172A").opacity(0.82)))
-                        .overlay(Capsule().stroke(Color(hex: "9BF0FF").opacity(0.6), lineWidth: 0.8))
-                        .frame(maxWidth: S + 40)
-                        .position(x: cx, y: cy - S / 2 - 10)
+                    // the stain's whole description: wraps onto more lines rather than being cut off
+                    VStack(spacing: 1) {
+                        Text(info.title.uppercased())
+                            .font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(0.8)
+                        Text(info.subtitle)
+                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundColor(Color(hex: "D6FAFF"))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color(hex: "04172A").opacity(0.85)))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color(hex: "9BF0FF").opacity(0.6), lineWidth: 0.8))
+                    .frame(maxWidth: S + 50)
+                    .frame(width: S + 50, height: 64, alignment: .bottom)     // grows upwards from just above the scope
+                    .position(x: cx - 12, y: cy - S / 2 - 36)
                 }
                 .frame(width: W, height: H)
                 .scaleEffect(visible ? 1 : 0.05, anchor: UnitPoint(x: well.x / W, y: well.y / H))
