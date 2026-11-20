@@ -385,6 +385,29 @@ final class FxView: NSView {
         expire(d, after: 0.3)
     }
 
+    /// A painted well: the stain pops into it, and a ring spreads out from it.
+    func pop(at p: CGPoint, fill: String, accent: String, cw: CGFloat, ch: CGFloat) {
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let l = CALayer()
+        l.bounds = CGRect(x: 0, y: 0, width: cw - 5, height: ch - 5)
+        l.cornerRadius = 8
+        l.backgroundColor = cg(fill)
+        l.borderColor = cg(accent)
+        l.borderWidth = 1.5
+        l.position = p
+        l.opacity = 0
+        root.addSublayer(l)
+        let g = CAAnimationGroup()
+        g.animations = [frames("transform.scale", [0.3, 1.12, 1.0], [0, 0.6, 1], 0.32, .easeOut),
+                        frames("opacity", [1, 1, 0], [0, 0.7, 1], 0.32)]
+        g.duration = 0.32
+        l.run(g, "pop")
+        expire(l, after: 0.4)
+        ripple(at: p, hex: accent, delay: 0.05, size: max(cw, ch) - 6)
+    }
+
     func pipetteAway() {
         guard pipette.opacity > 0 else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)

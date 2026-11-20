@@ -838,7 +838,7 @@ struct PlateSection: View {
                         Embossed(text: rowLetters[i]).frame(width: letterW, height: ch)
                     }
                 }
-                grid
+                PlateGrid(paint: store.paint, hover: hover, cw: cw, ch: ch)
                     .background(
                         // the raised deck the wells sit in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -853,30 +853,41 @@ struct PlateSection: View {
         .background(PlateShell())
     }
 
-    private var grid: some View {
+}
+
+/// The plate's 96 wells. Its own view observing the drag in progress, so painting redraws the plate
+/// alone; the rest of the window catches up when the drag ends.
+struct PlateGrid: View {
+    @EnvironmentObject var store: Store
+    @ObservedObject var paint: PaintBuffer
+    let hover: HoverFlag
+    let cw: CGFloat, ch: CGFloat
+
+    var body: some View {
         let sets = store.exp.sets
         let ids = sets.map { $0.id }
         let fills = sets.enumerated().map { fillHex($0.element, $0.offset) }
         let accents = sets.enumerated().map { setAccent($0.element, $0.offset) }
         let spot = store.spotlightSet.flatMap { ids.contains($0) ? $0 : nil }
+        let wells = (0..<96).map { paint.value($0, store.exp.wells[$0]) }
         return VStack(spacing: 0) {
             ForEach(0..<8, id: \.self) { i in
                 HStack(spacing: 0) {
                     ForEach(0..<12, id: \.self) { j in
                         let w = i * 12 + j
-                        let k = store.exp.wells[w].flatMap { ids.firstIndex(of: $0) }
+                        let k = wells[w].flatMap { ids.firstIndex(of: $0) }
                         let dupSource = store.tool == .duplicate && store.duplicateSource != nil
                             && (store.duplicateScope == .row ? store.duplicateSource! / 12 == i : store.duplicateSource == w)
                         WellCell(fill: k.map { fills[$0] }, accent: k.map { accents[$0] }, label: store.exp.label(w),
                                  selected: store.tool == .text && store.selectedWell == w, dupSource: dupSource,
-                                 dim: spot != nil && store.exp.wells[w] != spot, glow: spot != nil && store.exp.wells[w] == spot,
+                                 dim: spot != nil && wells[w] != spot, glow: spot != nil && wells[w] == spot,
                                  motion: store.motion, cw: cw, ch: ch)
                             .equatable()
                     }
                 }
             }
         }
-        .overlay(GlintLane(stained: (0..<96).filter { w in store.exp.wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
+        .overlay(GlintLane(stained: (0..<96).filter { w in wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
                     .allowsHitTesting(false))
         .fxGrid()
         .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch))
@@ -941,7 +952,6 @@ struct WellCell: View, Equatable {
                         .rotationEffect(.degrees(-18))
                         .offset(x: -cw * 0.17, y: -ch * 0.27)
                 }
-                .transition(.scale(scale: 0.25).combined(with: .opacity))
             }
             // the black wall: its top edge catching the light
             shape.strokeBorder(LinearGradient(colors: [Color(hex: "6B7685"), Color(hex: "39424E"), Color(hex: "232A33")],
@@ -962,15 +972,10 @@ struct WellCell: View, Equatable {
         .shadow(color: glow ? (accent ?? Brand.mid).opacity(0.55) : .clear, radius: glow ? 7 : 0)
         .scaleEffect(glow ? 1.04 : 1)
         .opacity(dim ? 0.28 : 1)
-        .overlay(WellSplash(start: splashAt.wrappedValue, color: accent ?? Brand.mid, on: motion, settle: settle.wrappedValue).padding(-10))
-        .animation(motion ? .spring(response: 0.3, dampingFraction: 0.5) : nil, value: fill)
+        // the pop and ripple when a well is painted are played by the effects layer (Fx.swift): as SwiftUI
+        // animations here they redrew the whole plate every frame and cost most of the CPU while painting
         .animation(motion ? .spring(response: 0.32, dampingFraction: 0.7) : nil, value: dim)
         .animation(motion ? .spring(response: 0.32, dampingFraction: 0.7) : nil, value: glow)
-        .onChange(of: fill) { new in
-            guard new != nil, motion else { return }
-            splashAt.wrappedValue = Date()
-            DispatchQueue.main.asyncAfter(deadline: .now() + WellSplash.length + 0.1) { settle.wrappedValue += 1 }
-        }
     }
 }
 
@@ -1227,23 +1232,49 @@ struct DyeTag: View {
 /// as on a real SBS-format plate.
 struct PlateShell: View {
     var body: some View {
-        let outline = ChamferedRect(radius: 14, cut: 16)
-        ZStack {
-            outline.fill(Color.black.opacity(0.35)).offset(y: 6).blur(radius: 8)
-            // black polymer, a little lighter at the top where the room light falls
-            outline.fill(LinearGradient(colors: [Color(hex: "3A424E"), Color(hex: "20262F"), Color(hex: "15191F")],
-                                        startPoint: .top, endPoint: .bottom))
-            outline.fill(LinearGradient(colors: [.white.opacity(0.09), .white.opacity(0)],
-                                        startPoint: .topLeading, endPoint: UnitPoint(x: 0.4, y: 0.6)))
-            // a lit outer edge, a dark groove just inside it
-            outline.stroke(LinearGradient(colors: [.white.opacity(0.32), .white.opacity(0.12), .white.opacity(0.05)],
-                                          startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.4)
-            ChamferedRect(radius: 11, cut: 13).inset(by: 5)
-                .stroke(Color.black.opacity(0.55), lineWidth: 1.4)
-            ChamferedRect(radius: 11, cut: 13).inset(by: 6)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        GeometryReader { g in
+            if let img = PlateShell.image(g.size) {
+                Image(decorative: img, scale: screenScale).resizable()
+                    .frame(width: g.size.width + 32, height: g.size.height + 32)
+                    .offset(x: -16, y: -16)
+            }
         }
-        .padding(16).drawingGroup().padding(-16)      // drawn once into a single layer, with room for its shadow
+    }
+
+    /// The plate body drawn once per size: re-blurring its shadow every time a well was painted was
+    /// most of the cost of painting.
+    private static var cache: [String: CGImage] = [:]
+    static func image(_ size: CGSize) -> CGImage? {
+        guard size.width > 1, size.height > 1 else { return nil }
+        let key = "\(Int(size.width))x\(Int(size.height))"
+        if let i = cache[key] { return i }
+        let pad: CGFloat = 16
+        let full = CGSize(width: size.width + 2 * pad, height: size.height + 2 * pad)
+        let img = renderImage(full, screenScale) { c in
+            let space = CGColorSpace(name: CGColorSpace.sRGB)!
+            let r = CGRect(x: pad, y: pad, width: size.width, height: size.height)
+            func outline(_ rect: CGRect, _ radius: CGFloat, _ cut: CGFloat) -> CGPath {
+                ChamferedRect(radius: radius, cut: cut).path(in: rect).cgPath
+            }
+            let body = outline(r, 14, 16)
+            c.saveGState()
+            c.setShadow(offset: CGSize(width: 0, height: 6), blur: 16, color: NSColor.black.withAlphaComponent(0.35).cgColor)
+            c.addPath(body); c.setFillColor(cg("1A1F27")); c.fillPath()
+            c.restoreGState()
+            c.saveGState(); c.addPath(body); c.clip()
+            if let g = CGGradient(colorsSpace: space, colors: [cg("3A424E"), cg("20262F"), cg("15191F")] as CFArray, locations: [0, 0.5, 1]) {
+                c.drawLinearGradient(g, start: CGPoint(x: 0, y: r.minY), end: CGPoint(x: 0, y: r.maxY), options: [])
+            }
+            if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.09), cg("FFFFFF", 0)] as CFArray, locations: [0, 1]) {
+                c.drawLinearGradient(g, start: CGPoint(x: r.minX, y: r.minY), end: CGPoint(x: r.minX + r.width * 0.4, y: r.minY + r.height * 0.6), options: [])
+            }
+            c.restoreGState()
+            c.addPath(body); c.setStrokeColor(cg("FFFFFF", 0.22)); c.setLineWidth(1.4); c.strokePath()
+            c.addPath(outline(r.insetBy(dx: 5, dy: 5), 11, 13)); c.setStrokeColor(cg("000000", 0.55)); c.setLineWidth(1.4); c.strokePath()
+            c.addPath(outline(r.insetBy(dx: 6, dy: 6), 11, 13)); c.setStrokeColor(cg("FFFFFF", 0.06)); c.setLineWidth(1); c.strokePath()
+        }
+        cache[key] = img
+        return img
     }
 }
 
@@ -1281,4 +1312,12 @@ struct Embossed: View {
         }
         .font(.system(size: 11, weight: .bold, design: .rounded))
     }
+}
+
+let fxProbe = ProcessInfo.processInfo.environment["ICC_FX_PROBE"] ?? ""
+
+/// A stain's outline colour as hex, for the effects layer.
+func setAccentHex(_ set: StainSet, _ i: Int) -> String {
+    let c = NSColor(setAccent(set, i)).usingColorSpace(.sRGB) ?? NSColor.gray
+    return String(format: "%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
 }

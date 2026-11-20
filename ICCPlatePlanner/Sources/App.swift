@@ -267,6 +267,9 @@ final class Store: ObservableObject {
     }
     /// Bumped when the selected stain's button is clicked again, to show its hologram now.
     @Published var hologramRequest = 0
+    /// Wells painted or erased during the current drag, shown at once on the plate and committed to the
+    /// plan when the drag ends: painting then redraws only the plate, not every card in the window.
+    let paint = PaintBuffer()
     /// How many times each stain's chip has shaken (its pairing just went wrong).
     @Published var shakes: [UUID: Int] = [:]
     private var flyWork: [UUID: DispatchWorkItem] = [:]
@@ -466,15 +469,17 @@ final class Store: ObservableObject {
         switch tool {
         case .paint(let id):
             guard exp.sets.contains(where: { $0.id == id }) else { validateTool(); return }
-            if dragErases == nil { dragErases = (exp.wells[w] == id) }
+            let current = paint.value(w, exp.wells[w])
+            if dragErases == nil { dragErases = (current == id) }
             let new: UUID? = dragErases! ? nil : id
-            if dragErases! && exp.wells[w] != id { return }
-            if exp.wells[w] != new {
-                setWell(w, new)
+            if dragErases! && current != id { return }
+            if current != new {
+                paint.set(w, new)
+                tap(.alignment)
                 if new != nil { fxPaint(w, id) }
             }
         case .erase:
-            if exp.wells[w] != nil { setWell(w, nil) }
+            if paint.value(w, exp.wells[w]) != nil { paint.set(w, nil); tap(.alignment) }
         case .text:
             if selectedWell != w { selectedWell = w }
         case .tag(let sampleID):
@@ -591,7 +596,21 @@ final class Store: ObservableObject {
         validateTool()
     }
 
-    func endDrag() { dragErases = nil; dupDrag = nil; FxCenter.shared.view?.pipetteAway() }
+    func endDrag() {
+        dragErases = nil; dupDrag = nil
+        FxCenter.shared.view?.pipetteAway()
+        commitPaint()
+    }
+
+    /// The wells painted during the drag go into the plan in one change (one undo step).
+    func commitPaint() {
+        let changes = paint.take()
+        guard !changes.isEmpty else { return }
+        var e = exp
+        for (w, id) in changes { e.wells[w] = id }
+        e.blockingOverride = nil   // stained wells changed, so the buffer goes back to automatic
+        exp = e
+    }
 
     /// Changing which wells are stained puts the blocking buffer back on automatic,
     /// so a number typed for an earlier layout never lingers.
@@ -893,6 +912,30 @@ func lagCheck(_ platePath: String) {
         beat.invalidate()
         return
     }
+    if a.contains("--paint-bench") {
+        // paint and clear rows continuously, for profiling
+        store.tool = .paint(store.exp.sets[0].id)
+        var n = 0
+        let t = Timer(timeInterval: 0.08, repeats: true) { _ in
+            if ProcessInfo.processInfo.environment["ICC_BENCH"] == "longdrag" {
+                // one long drag across the whole plate, never released
+                if n == 0 { store.tool = .paint(store.exp.sets[0].id) }
+                store.touch(n % 96 == 0 && n > 0 ? 0 : n % 96)
+                n += 1
+                return
+            }
+            // paint a row in one drag, then erase it in the next, as a person would
+            let w = 84 + n % 12
+            if n % 12 == 0 { store.tool = n % 24 < 12 ? .paint(store.exp.sets[0].id) : .erase }
+            store.touch(w)
+            if n % 12 == 11 { store.endDrag() }
+            n += 1
+        }
+        RunLoop.main.add(t, forMode: .common)
+        phase("painting continuously (12 s)", 12)
+        t.invalidate(); beat.invalidate()
+        return
+    }
     phase("plate idle, no stain picked (8 s)", 8)
     phase("hologram scanning over a stain (14 s)", 14) { store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id) }
     phase("same stain picked again within the cooldown: stays away (3 s)", 3) {
@@ -946,6 +989,10 @@ extension Store {
     /// After every change to the plan: antibodies fly to a stain whose antibodies changed, and a stain
     /// whose pairing has just gone wrong sounds the alarm.
     func fxAfterChange(_ old: Experiment) {
+        if lastVerdicts.isEmpty {
+            // the first change since launch: what each stain's pairing was before it
+            for set in old.sets { lastVerdicts[set.id] = panel(set).verdict }
+        }
         let quiet = Date() < fxQuietUntil
         if !quiet {
             for set in exp.sets {
@@ -1001,13 +1048,14 @@ extension Store {
     }
 
     func fxPaint(_ w: Int, _ id: UUID) {
-        if ProcessInfo.processInfo.environment["ICC_FX_PROBE"] == "nopip" { return }
         let fx = FxCenter.shared
         guard motion, fx.usable, let k = exp.sets.firstIndex(where: { $0.id == id }) else { return }
         let hex = fillHex(exp.sets[k], k)
         let dye = panel(exp.sets[k]).channels.first { !$0.fluor.counterstain }?.fluor.hex ?? hex
         fx.view?.pipette(over: fx.gridFrame, col: w % 12, row: w / 12, cw: fx.cw, ch: fx.ch, hex: dye)
         fx.view?.drop(at: fx.wellCenter(w), hex: hex, ch: fx.ch)
+        let accent = setAccentHex(exp.sets[k], k)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { fx.view?.pop(at: fx.wellCenter(w), fill: hex, accent: accent, cw: fx.cw, ch: fx.ch) }
     }
 }
 
@@ -1043,6 +1091,26 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
     shot("frost1")
     RunLoop.main.run(until: Date().addingTimeInterval(0.9))
     shot("frost2")
+    // a pairing goes wrong: Stain 1's rabbit primary given an anti-mouse 488
+    if !store.exp.sets.isEmpty, !store.exp.sets[0].secondaries.isEmpty {
+        let before = store.exp.sets[0].secondaries[0].name
+        store.exp.sets[0].secondaries[0].name = "488 m"
+        print("Stain 1 now:", panel(store.exp.sets[0]).verdict, "· shakes:", store.shakes[store.exp.sets[0].id] ?? 0)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.62))
+        print("after the check:", "shakes:", store.shakes[store.exp.sets[0].id] ?? 0)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        shot("clash")
+        RunLoop.main.run(until: Date().addingTimeInterval(1.6))
+        store.exp.sets[0].secondaries[0].name = before
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    }
+    // the hologram plays and the room dims
+    store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
+    RunLoop.main.run(until: Date().addingTimeInterval(HoloController.dwell + 1.4))
+    print("hologram shown:", HoloController.shared.shown != nil)
+    shot("dim")
+    store.tool = .erase
+    RunLoop.main.run(until: Date().addingTimeInterval(1.0))
     // the export window, part-way through the scan
     ExportScanController.shared.present(store, url: URL(fileURLWithPath: NSTemporaryDirectory() + "fxshot.xlsx")) {}
     RunLoop.main.run(until: Date().addingTimeInterval(2.6))
@@ -1051,4 +1119,17 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
         try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outPrefix + "export.png"))
     }
     ExportScanController.shared.close()
+}
+
+
+/// The wells changed by the drag in progress (nil = erased), observed only by the plate's grid.
+final class PaintBuffer: ObservableObject {
+    @Published private(set) var wells: [Int: UUID?] = [:]
+    func value(_ w: Int, _ committed: UUID?) -> UUID? { wells[w] ?? committed }
+    func set(_ w: Int, _ id: UUID?) { wells[w] = .some(id) }
+    func take() -> [Int: UUID?] {
+        let out = wells
+        if !wells.isEmpty { wells = [:] }
+        return out
+    }
 }
