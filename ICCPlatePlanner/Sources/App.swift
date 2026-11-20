@@ -42,6 +42,7 @@ enum Main {
         if let i = a.firstIndex(of: "--qc"), a.count > i + 1 { plateQC(a[i + 1]); return }
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
+        if a.contains("--pair-qc") { pairQC(); return }
         if let i = a.firstIndex(of: "--export-scan-snapshot"), a.count > i + 2, let t = Double(a[i + 2]) {
             exportScanSnapshot(a[i + 1], at: t, plate: a.firstIndex(of: "--plate").flatMap { a.count > $0 + 1 ? a[$0 + 1] : nil })
             return
@@ -275,6 +276,14 @@ final class Store: ObservableObject {
     private var flyWork: [UUID: DispatchWorkItem] = [:]
     private var clashWork: DispatchWorkItem?
     private var lastVerdicts: [UUID: Verdict] = [:]
+    private var clashCache: (sets: [StainSet], bad: Set<UUID>)?
+    /// The stains with at least one pairing that cannot work (their wells show red on the plate).
+    var clashingSets: Set<UUID> {
+        if let c = clashCache, c.sets == exp.sets { return c.bad }
+        let bad = Set(exp.sets.filter { panel($0).verdict == .problem }.map { $0.id })
+        clashCache = (exp.sets, bad)
+        return bad
+    }
     /// Effects stay quiet while a plate is being loaded.
     var fxQuietUntil = Date.distantPast
     /// Well the Duplicate tool is copying (row scope copies its whole row); nil = pick one first.
@@ -1027,8 +1036,10 @@ extension Store {
         guard !wells.isEmpty else { return }
         let step = max(1, wells.count / 8)
         let targets = stride(from: 0, to: wells.count, by: step).prefix(8).map { fx.wellCenter(wells[$0]) }
-        let dyes = panel(exp.sets[k]).channels.filter { !$0.fluor.counterstain }.map { $0.fluor.hex }
-        fx.view?.fly(from: CGPoint(x: card.maxX - 70, y: card.minY + 46), to: targets, hexes: dyes.isEmpty ? [fillHex(exp.sets[k], k)] : dyes)
+        // one colour per pairing: its dye when the secondary can find the primary, red when it cannot
+        let combos = panel(exp.sets[k]).combos
+        let colours = combos.map { $0.verdict == .problem ? "BAD" : ($0.fluor?.hex ?? fillHex(exp.sets[k], k)) }
+        fx.view?.fly(from: CGPoint(x: card.maxX - 70, y: card.minY + 46), to: targets, hexes: colours.isEmpty ? [fillHex(exp.sets[k], k)] : colours)
     }
 
     func fxCheckClash(quiet: Bool) {
@@ -1105,9 +1116,24 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         shot("clash")
         RunLoop.main.run(until: Date().addingTimeInterval(1.6))
+        shot("clashstill")                  // after the pulse: the wells stay outlined in red
+        store.fxFly(store.exp.sets[0].id)    // antibodies for the wrong pairing fly red
+        RunLoop.main.run(until: Date().addingTimeInterval(1.05))
+        shot("clashfly")
         store.exp.sets[0].secondaries[0].name = before
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     }
+    // painting row H with the pipette
+    store.tool = .paint(store.exp.sets[0].id)
+    for (n, w) in (84..<90).enumerated() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 * Double(n)) { store.touch(w) }
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    shot("pipette")
+    store.endDrag()
+    for w in 84..<90 { store.exp.wells[w] = nil }
+    store.tool = .erase
+    RunLoop.main.run(until: Date().addingTimeInterval(0.6))
     // pointing at Stain 2: its wells stay lit, the others sink
     store.spotlightSet = store.exp.sets[min(1, store.exp.sets.count - 1)].id
     RunLoop.main.run(until: Date().addingTimeInterval(0.6))
@@ -1142,4 +1168,65 @@ final class PaintBuffer: ObservableObject {
         if !wells.isEmpty { wells = [:] }
         return out
     }
+}
+
+
+/// Development: every primary host against every secondary target, by short name and by product name,
+/// plus the cases that must fail; prints any verdict that is not what it should be.
+func pairQC() {
+    let hosts: [(String, String, String)] = [   // species, the lab's short form, the product-name form
+        ("rabbit", "rab", "Rabbit"), ("goat", "g", "Goat"), ("rat", "rat", "Rat"), ("mouse", "ms", "Mouse"),
+        ("sheep", "sheep", "Sheep"), ("chicken", "chk", "Chicken"), ("guinea pig", "gp", "Guinea Pig"),
+    ]
+    var checked = 0, wrong: [String] = []
+    for p in hosts {
+        for t in hosts {
+            for style in ["short", "product", "product name", "goat-raised"] {
+                var set = StainSet()
+                set.primaries = [Antibody(name: "MARKERX (\(p.1))", dilution: 500)]
+                var q: Secondary
+                switch style {
+                case "short": q = Secondary(name: "488 \(t.1)", dilution: 500)
+                case "product":                                   // a short name, the maker's name saved behind it
+                    q = Secondary(name: "488 donkey", dilution: 500)
+                    q.detail = "Donkey anti-\(t.2) IgG (H+L), Alexa Fluor 488"
+                case "product name": q = Secondary(name: "Donkey anti-\(t.2) IgG Alexa Fluor 488", dilution: 500)
+                default: q = Secondary(name: "Goat anti-\(t.2) 488", dilution: 500)
+                }
+                if style == "goat-raised" && (t.0 == "goat" || p.0 == "goat") { continue }   // a goat secondary is not used on goat
+                set.secondaries = [q]
+                let r = panel(set)
+                let combo = r.combos.first?.verdict
+                let should: Verdict = p.0 == t.0 ? .ok : .problem
+                checked += 1
+                if combo != should { wrong.append("\(p.0) primary + anti-\(t.0) (\(style)): got \(String(describing: combo)), expected \(should)") }
+                // a stain with a wrong pairing is the one whose wells turn red
+                if (r.verdict == .problem) != (should == .problem) { wrong.append("\(p.0)/\(t.0) (\(style)): stain verdict \(r.verdict)") }
+            }
+        }
+    }
+    func one(_ prims: [String], _ secs: [String]) -> PanelReport {
+        var set = StainSet()
+        set.primaries = prims.map { Antibody(name: $0, dilution: 500) }
+        set.secondaries = secs.map { Secondary(name: $0, dilution: 500) }
+        return panel(set)
+    }
+    let cases: [(String, [String], [String], Verdict)] = [
+        ("two rabbit primaries with one anti-rabbit", ["A (rab)", "B (rab)"], ["488 rab"], .problem),
+        ("two secondaries on the same dye", ["A (rab)", "B (g)"], ["488 rab", "488 g"], .problem),
+        ("goat primary with no secondary for goat", ["A (g)"], ["488 rab"], .problem),
+        ("the lab's Stain 1", ["LMX1A/B (rab)", "FOXA2 (g)"], ["488 rab", "594 g"], .ok),
+        ("the lab's Stain 2", ["Corin (rat)", "OTX2 (g)"], ["488 rat", "594 g"], .ok),
+        ("the lab's Stain 5", ["Pitx2 (sheep)", "LMX1A/B (rab)", "TH (mouse)"], ["488 sheep", "594 rab", "647 ms"], .ok),
+        ("FOXA2 (goat) with an anti-rabbit 594", ["LMX1A/B (rab)", "FOXA2 (g)"], ["488 rab", "594 rab"], .problem),
+        ("TH (mouse) with an anti-rabbit 488", ["TH (mouse)", "Barhl1 (rab)"], ["488 rab", "594 rab"], .problem),
+        ("with DAPI as a counterstain", ["A (rab)"], ["488 rab", "DAPI"], .ok),
+    ]
+    for c in cases {
+        let r = one(c.1, c.2)
+        checked += 1
+        if r.verdict != c.3 { wrong.append("\(c.0): got \(r.verdict), expected \(c.3) · \(r.issues.joined(separator: " | "))") }
+    }
+    print("pairings checked: \(checked), wrong verdicts: \(wrong.count)")
+    wrong.forEach { print("  ✗", $0) }
 }

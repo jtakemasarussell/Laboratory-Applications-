@@ -870,6 +870,7 @@ struct PlateGrid: View {
         let accents = sets.enumerated().map { setAccent($0.element, $0.offset) }
         let spot = store.spotlightSet.flatMap { ids.contains($0) ? $0 : nil }
         let wells = (0..<96).map { paint.value($0, store.exp.wells[$0]) }
+        let bad = store.clashingSets
         return VStack(spacing: 0) {
             ForEach(0..<8, id: \.self) { i in
                 HStack(spacing: 0) {
@@ -881,7 +882,8 @@ struct PlateGrid: View {
                         WellCell(fill: k.map { fills[$0] }, accent: k.map { accents[$0] }, label: store.exp.label(w),
                                  selected: store.tool == .text && store.selectedWell == w, dupSource: dupSource,
                                  dim: false, glow: false,      // the spotlight is drawn over the grid (SpotVeil)
-                                 motion: store.motion, cw: cw, ch: ch)
+                                 motion: store.motion, cw: cw, ch: ch,
+                                 clash: wells[w].map { bad.contains($0) } ?? false)
                             .equatable()
                     }
                 }
@@ -917,6 +919,8 @@ struct WellCell: View, Equatable {
     let dupSource: Bool
     let dim: Bool
     let glow: Bool
+    /// The stain in this well has a pairing that cannot work: outlined in red with a "!".
+    var clash = false
     let motion: Bool
     let cw: CGFloat
     let ch: CGFloat
@@ -925,10 +929,11 @@ struct WellCell: View, Equatable {
 
     static func == (a: WellCell, b: WellCell) -> Bool {
         a.fill == b.fill && a.accent == b.accent && a.label == b.label && a.selected == b.selected && a.dupSource == b.dupSource
-            && a.dim == b.dim && a.glow == b.glow && a.motion == b.motion && a.cw == b.cw && a.ch == b.ch
+            && a.dim == b.dim && a.glow == b.glow && a.motion == b.motion && a.cw == b.cw && a.ch == b.ch && a.clash == b.clash
     }
 
-    init(fill: String?, accent: Color?, label: String, selected: Bool, dupSource: Bool, dim: Bool, glow: Bool, motion: Bool, cw: CGFloat, ch: CGFloat) {
+    init(fill: String?, accent: Color?, label: String, selected: Bool, dupSource: Bool, dim: Bool, glow: Bool, motion: Bool, cw: CGFloat, ch: CGFloat, clash: Bool = false) {
+        self.clash = clash
         self.fill = fill; self.accent = accent; self.label = label; self.selected = selected; self.dupSource = dupSource
         self.dim = dim; self.glow = glow; self.motion = motion; self.cw = cw; self.ch = ch
     }
@@ -961,6 +966,10 @@ struct WellCell: View, Equatable {
             shape.strokeBorder(LinearGradient(colors: [Color(hex: "6B7685"), Color(hex: "39424E"), Color(hex: "232A33")],
                                               startPoint: .top, endPoint: .bottom), lineWidth: 1.6)
             if fill != nil { shape.stroke(accent ?? Color(hex: "B9C8DF"), lineWidth: glow ? 2.4 : 1.3) }
+            if clash {
+                shape.fill(Color(hex: "FF3B30").opacity(0.14))
+                shape.stroke(Color(hex: "FF453A"), lineWidth: 2.2)
+            }
             if selected { shape.stroke(Color(hex: "9BD2FF"), lineWidth: 3) }
             if dupSource { shape.stroke(Color(hex: "9BD2FF"), style: StrokeStyle(lineWidth: 2, dash: [4, 3])) }
             Text(label)
@@ -970,6 +979,17 @@ struct WellCell: View, Equatable {
                 // light on an empty (dark) well or a dark stain, dark ink on a pale stain
                 .foregroundColor(fill == nil || dark ? Color(hex: "E3ECF7") : Brand.ink)
                 .padding(2)
+        }
+        .overlay(alignment: .topTrailing) {
+            if clash {
+                Text("!")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(.white)
+                    .frame(width: 13, height: 13)
+                    .background(Circle().fill(Color(hex: "FF3B30")))
+                    .offset(x: 2, y: -2)
+                    .help("This stain has a pairing that cannot work: see its card")
+            }
         }
         .padding(2.5)
         .frame(width: cw, height: ch)

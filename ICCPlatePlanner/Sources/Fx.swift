@@ -124,10 +124,28 @@ final class FxView: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         for (k, to) in targets.enumerated() {
-            let hex = hexes.isEmpty ? "4A78B8" : hexes[k % hexes.count]
+            var hex = hexes.isEmpty ? "4A78B8" : hexes[k % hexes.count]
+            // "BAD": a pairing that cannot work; its antibody is marked with a cross and bounces off the well
+            let rejected = hex == "BAD"
+            if rejected { hex = "FF3B30" }
             let ab = CALayer()
             ab.bounds = CGRect(x: 0, y: 0, width: 22, height: 22)
-            ab.contents = Self.image("ab" + hex, CGSize(width: 22, height: 22)) { c in
+            ab.contents = rejected ? Self.image("abBAD", CGSize(width: 22, height: 22)) { c in
+                let space = CGColorSpace(name: CGColorSpace.sRGB)!
+                if let g = CGGradient(colorsSpace: space, colors: [cg("FF3B30", 0.5), cg("FF3B30", 0)] as CFArray, locations: [0, 1]) {
+                    c.drawRadialGradient(g, startCenter: CGPoint(x: 11, y: 11), startRadius: 0, endCenter: CGPoint(x: 11, y: 11), endRadius: 11, options: [])
+                }
+                c.setStrokeColor(cg("FF453A")); c.setLineWidth(2.2); c.setLineCap(.round); c.setLineJoin(.round)
+                c.move(to: CGPoint(x: 11, y: 19)); c.addLine(to: CGPoint(x: 11, y: 11))
+                c.addLine(to: CGPoint(x: 5, y: 4)); c.move(to: CGPoint(x: 11, y: 11)); c.addLine(to: CGPoint(x: 17, y: 4))
+                c.strokePath()
+                // the cross
+                c.setFillColor(NSColor.white.cgColor); c.fillEllipse(in: CGRect(x: 12, y: 12, width: 10, height: 10))
+                c.setStrokeColor(cg("FF3B30")); c.setLineWidth(1.8)
+                c.move(to: CGPoint(x: 14.5, y: 14.5)); c.addLine(to: CGPoint(x: 19.5, y: 19.5))
+                c.move(to: CGPoint(x: 19.5, y: 14.5)); c.addLine(to: CGPoint(x: 14.5, y: 19.5))
+                c.strokePath()
+            } : Self.image("ab" + hex, CGSize(width: 22, height: 22)) { c in
                 let space = CGColorSpace(name: CGColorSpace.sRGB)!
                 if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0.55), cg(hex, 0)] as CFArray, locations: [0, 1]) {
                     c.drawRadialGradient(g, startCenter: CGPoint(x: 11, y: 11), startRadius: 0, endCenter: CGPoint(x: 11, y: 11), endRadius: 11, options: [])
@@ -156,13 +174,29 @@ final class FxView: NSView {
             move.duration = d
             move.timingFunctions = [CAMediaTimingFunction(controlPoints: 0.3, 0, 0.25, 1)]
             let g = CAAnimationGroup()
-            g.animations = [move,
-                            frames("opacity", [0, 1, 1, 0], [0, 0.12, 0.85, 1], d),
-                            frames("transform.rotation.z", [-0.6, 0.5, 0], [0, 0.6, 1], d),
-                            frames("transform.scale", [0.6, 1.25, 0.7], [0, 0.5, 1], d)]
-            g.duration = d
+            if rejected {
+                // arrives, bumps the well, and is knocked off: it springs back up and falls away, spinning
+                let away = CGPoint(x: to.x + (k % 2 == 0 ? 22 : -22), y: to.y + 46)
+                let bounce = CAKeyframeAnimation(keyPath: "position")
+                bounce.values = [NSValue(point: to), NSValue(point: CGPoint(x: (to.x + away.x) / 2, y: to.y - 20)), NSValue(point: away)]
+                bounce.keyTimes = [0, 0.4, 1]
+                bounce.duration = 0.55
+                bounce.beginTime = d
+                bounce.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeIn)]
+                g.animations = [move, bounce,
+                                frames("opacity", [0, 1, 1, 1, 0], [0, 0.08, 0.6, 0.85, 1], d + 0.55),
+                                frames("transform.rotation.z", [-0.6, 0.4, 0, 2.6], [0, 0.4, 0.62, 1], d + 0.55),
+                                frames("transform.scale", [0.6, 1.25, 1.0, 0.7], [0, 0.35, 0.62, 1], d + 0.55)]
+                g.duration = d + 0.55
+            } else {
+                g.animations = [move,
+                                frames("opacity", [0, 1, 1, 0], [0, 0.12, 0.85, 1], d),
+                                frames("transform.rotation.z", [-0.6, 0.5, 0], [0, 0.6, 1], d),
+                                frames("transform.scale", [0.6, 1.25, 0.7], [0, 0.5, 1], d)]
+                g.duration = d
+            }
             ab.run(g, "fly", delay: wait)
-            expire(ab, after: wait + d + 0.1)
+            expire(ab, after: wait + g.duration + 0.1)
             ripple(at: to, hex: hex, delay: wait + d - 0.08, size: 30)
         }
     }
@@ -311,7 +345,7 @@ final class FxView: NSView {
         let x = grid.minX + (CGFloat(col) + 0.5) * cw
         if pipette.opacity == 0 {
             CATransaction.setDisableActions(true)
-            pipette.bounds = CGRect(x: 0, y: 0, width: 46, height: grid.height + 70)
+            pipette.bounds = CGRect(x: 0, y: 0, width: 46, height: grid.height + 66)
             pipette.position = CGPoint(x: x, y: grid.minY - 64)
             pipette.removeAnimation(forKey: "out")
             pipette.run(frames("opacity", [0, 0.92], [0, 1], 0.18), "in")
@@ -322,40 +356,48 @@ final class FxView: NSView {
         }
         if hex != pipetteHex {
             pipetteHex = hex
-            pipette.contents = Self.image("pip\(hex)\(Int(ch))x\(Int(grid.height))", pipette.bounds.size) { c in
-                Self.drawPipette(c, size: CGSize(width: 46, height: grid.height + 70), ch: ch, hex: hex)
+            pipette.contents = Self.image("pip2\(hex)\(Int(ch))x\(Int(grid.height))", pipette.bounds.size) { c in
+                Self.drawPipette(c, size: CGSize(width: 46, height: grid.height + 66), ch: ch, hex: hex)
             }
         }
         CATransaction.commit()
     }
 
-    /// The pipette: a head with a plunger, a manifold, and eight tips with a little liquid in each.
+    /// The pipette, seen from above: a head with its plunger and colour band, one frosted manifold running
+    /// down the column, and a small tip centred over each of the eight wells, holding a bead of the stain.
     private static func drawPipette(_ c: CGContext, size: CGSize, ch: CGFloat, hex: String) {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let mid = size.width / 2
+        let gridTop: CGFloat = 64                         // the grid's top edge in this picture
         // plunger and head
-        c.setFillColor(cg("C9D2DE", 0.9)); c.fill(CGRect(x: mid - 4, y: 0, width: 8, height: 16))
-        let head = CGRect(x: mid - 15, y: 14, width: 30, height: 36)
-        c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil))
-        c.saveGState(); c.clip()
-        if let g = CGGradient(colorsSpace: space, colors: [cg("F2F5F9"), cg("B7C2D0"), cg("8A97A8")] as CFArray, locations: [0, 0.6, 1]) {
+        c.setFillColor(cg("C9D2DE", 0.95)); c.fill(CGRect(x: mid - 3.5, y: 2, width: 7, height: 14))
+        let head = CGRect(x: mid - 14, y: 14, width: 28, height: 34)
+        c.saveGState()
+        c.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: cg("000000", 0.35))
+        c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.setFillColor(cg("B7C2D0")); c.fillPath()
+        c.restoreGState()
+        c.saveGState(); c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.clip()
+        if let g = CGGradient(colorsSpace: space, colors: [cg("F4F7FA"), cg("C3CCD8"), cg("8F9BAC")] as CFArray, locations: [0, 0.55, 1]) {
             c.drawLinearGradient(g, start: CGPoint(x: head.minX, y: 0), end: CGPoint(x: head.maxX, y: 0), options: [])
         }
         c.restoreGState()
-        c.setFillColor(cg(hex)); c.fill(CGRect(x: mid - 9, y: 22, width: 18, height: 4))      // the colour band
-        // the manifold down the column
-        let top: CGFloat = 50, rows = 8
-        c.setFillColor(cg("DDE4EC", 0.55)); c.fill(CGRect(x: mid - 6, y: top, width: 12, height: CGFloat(rows) * ch - 6))
-        c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8); c.stroke(CGRect(x: mid - 6, y: top, width: 12, height: CGFloat(rows) * ch - 6))
-        // eight tips, one over each row
-        for i in 0..<rows {
-            let y = top + 14 + CGFloat(i) * ch - 64 + 64 + ch * 0.5 - 22
-            let tip = CGMutablePath()
-            tip.move(to: CGPoint(x: mid - 5, y: y)); tip.addLine(to: CGPoint(x: mid + 5, y: y))
-            tip.addLine(to: CGPoint(x: mid + 1.3, y: y + 18)); tip.addLine(to: CGPoint(x: mid - 1.3, y: y + 18)); tip.closeSubpath()
-            c.addPath(tip); c.setFillColor(cg("F6F9FC", 0.9)); c.fillPath()
-            c.addPath(tip); c.setStrokeColor(cg("9AA8BA", 0.9)); c.setLineWidth(0.7); c.strokePath()
-            c.setFillColor(cg(hex, 0.85)); c.fill(CGRect(x: mid - 2, y: y + 11, width: 4, height: 6))
+        c.setFillColor(cg(hex)); c.fill(CGRect(x: mid - 9, y: 22, width: 18, height: 4))     // the colour band
+        // one manifold, from the head to the last well, frosted and see-through
+        let bar = CGRect(x: mid - 5, y: head.maxY - 2, width: 10, height: gridTop + 8 * ch - head.maxY - ch * 0.5 + 2)
+        let barPath = CGPath(roundedRect: bar, cornerWidth: 5, cornerHeight: 5, transform: nil)
+        c.saveGState(); c.addPath(barPath); c.clip()
+        if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.55), cg("DDE4EC", 0.35), cg("FFFFFF", 0.5)] as CFArray, locations: [0, 0.5, 1]) {
+            c.drawLinearGradient(g, start: CGPoint(x: bar.minX, y: 0), end: CGPoint(x: bar.maxX, y: 0), options: [])
+        }
+        c.restoreGState()
+        c.addPath(barPath); c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8); c.strokePath()
+        // a tip nub centred over each well, with a bead of stain
+        for i in 0..<8 {
+            let y = gridTop + (CGFloat(i) + 0.5) * ch
+            let nub = CGRect(x: mid - 4, y: y - 4, width: 8, height: 8)
+            c.setFillColor(cg("F6F9FC", 0.95)); c.fillEllipse(in: nub)
+            c.setStrokeColor(cg("8E9CAE", 0.9)); c.setLineWidth(0.8); c.strokeEllipse(in: nub)
+            c.setFillColor(cg(hex)); c.fillEllipse(in: nub.insetBy(dx: 2.2, dy: 2.2))
         }
     }
 

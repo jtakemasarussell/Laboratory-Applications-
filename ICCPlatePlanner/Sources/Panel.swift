@@ -157,8 +157,23 @@ struct PanelReport {
 func effectiveHost(_ p: Antibody) -> String? { facts(for: p)?.host ?? host(ofPrimary: p) }
 /// The species a secondary's own name gives ("647 rab" → rabbit), if it gives one.
 func nameSpecies(_ q: Secondary) -> String? {
-    let words = q.name.split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "/" }).map(String.init)
-    for w in words where !(w.first?.isNumber ?? false) { if let s = species(w) { return s } }
+    let words = q.name.lowercased().split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "/" || $0 == "," }).map(String.init)
+    func at(_ i: Int) -> String? {
+        // two-word species first ("guinea pig"), then one word
+        if i + 1 < words.count, let s = species(words[i] + " " + words[i + 1]) { return s }
+        return species(words[i])
+    }
+    // "Donkey anti-Rabbit …", "goat anti rat": the species after "anti" is what it recognises;
+    // the one before is the animal it was raised in
+    if let a = words.firstIndex(where: { $0 == "anti" || $0 == "α" }) {
+        for i in (a + 1)..<words.count where !(words[i].first?.isNumber ?? false) { if let s = at(i) { return s } }
+        return nil
+    }
+    // the lab's short names ("488 rab", "594 g"): the species word is the target. "donkey" alone is the
+    // animal a secondary is raised in, not what it detects, so it says nothing here.
+    for i in words.indices where !(words[i].first?.isNumber ?? false) {
+        if let s = at(i), s != "donkey" { return s }
+    }
     return nil
 }
 
