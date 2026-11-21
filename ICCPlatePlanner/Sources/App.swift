@@ -11,7 +11,10 @@ enum Main {
     static func main() {
         let a = CommandLine.arguments
         if let i = a.firstIndex(of: "--export-sample"), a.count > i + 1 {
-            let data = buildWorkbook(sampleExperiment(), Settings())
+            var e = sampleExperiment()
+            if let j = a.firstIndex(of: "--plate"), a.count > j + 1, let d = try? Data(contentsOf: URL(fileURLWithPath: a[j + 1])),
+               let loaded = try? decodePlate(d) { e = loaded }
+            let data = buildWorkbook(e, Settings())
             try! data.write(to: URL(fileURLWithPath: a[i + 1]))
             return
         }
@@ -289,9 +292,6 @@ final class Store: ObservableObject {
     /// Well the Duplicate tool is copying (row scope copies its whole row); nil = pick one first.
     @Published var duplicateSource: Int? = nil
     @Published var duplicateScope: DuplicateScope = .well
-    @Published var openAfterExport: Bool {
-        didSet { if persist { UserDefaults.standard.set(openAfterExport, forKey: "openAfterExport") } }
-    }
     /// A light tick on the trackpad as wells fill and tools change.
     @Published var haptics: Bool = UserDefaults.standard.object(forKey: "haptics") as? Bool ?? true {
         didSet { if persist { UserDefaults.standard.set(haptics, forKey: "haptics") } }
@@ -381,7 +381,6 @@ final class Store: ObservableObject {
             exp = .starter; settings = Settings(); library = .seed
         }
         UserDefaults.standard.set(Library.seedVersion, forKey: "librarySeedVersion")
-        openAfterExport = UserDefaults.standard.object(forKey: "openAfterExport") as? Bool ?? true
         if let first = exp.sets.first { tool = .paint(first.id) }
         if merged { save() }   // keep the newly added department antibodies
         let nc = NotificationCenter.default
@@ -397,7 +396,6 @@ final class Store: ObservableObject {
     /// A store that never reads or writes the saved file (development checks only).
     init(inMemory experiment: Experiment) {
         exp = experiment; settings = Settings(); library = .seed
-        openAfterExport = false
         persist = false
         haptics = false
         if let first = exp.sets.first { tool = .paint(first.id) }
@@ -757,16 +755,11 @@ final class Store: ObservableObject {
             try buildWorkbook(exp, settings).write(to: url, options: .atomic)
             library.remember(exp.sets)
             tap(.levelChange)
-            if motion && hasStainedWells {
-                // the microscope acquires the plate in its own window; Excel opens when it is done
-                ExportScanController.shared.present(self, url: url) { [weak self] in
-                    self?.confettiAt = Date()
-                    self?.showToast(exportLines.randomElement() ?? "Exported.")
-                }
-            } else {
-                showToast(exportLines.randomElement() ?? "Exported.")
-                confettiAt = Date()
-                if openAfterExport { NSWorkspace.shared.open(url) }
+            // the export window always follows: the microscope acquires the plate (straight to the end with
+            // Animations off or nothing stained), then Open in Excel, Show in Finder or Done is the user's choice
+            ExportScanController.shared.present(self, url: url) { [weak self] in
+                self?.confettiAt = Date()
+                self?.showToast(exportLines.randomElement() ?? "Exported.")
             }
         } catch {
             errorAlert("Could not save the Excel file", error)
@@ -919,6 +912,25 @@ func lagCheck(_ platePath: String) {
         }
         phase("tilt settles (2 s)", 2)
         beat.invalidate()
+        return
+    }
+    if a.contains("--scroll-bench") {
+        // scroll the stain cards up and down as a trackpad would, 60 times a second
+        func scrollViews(_ v: NSView) -> [NSScrollView] { ((v as? NSScrollView).map { [$0] } ?? []) + v.subviews.flatMap(scrollViews) }
+        let left = scrollViews(host).filter { $0.frame.width < 700 && ($0.documentView?.frame.height ?? 0) > $0.frame.height }.first
+        guard let sv = left else { print("no scroll view"); return }
+        print("scrolling a column \(Int(sv.documentView?.frame.height ?? 0)) pt tall")
+        var t = 0.0
+        let tick = Timer(timeInterval: 1.0 / 60, repeats: true) { _ in
+            t += 1.0 / 60
+            let maxY = max(0, (sv.documentView?.frame.height ?? 0) - sv.contentView.bounds.height)
+            let y = (1 - cos(t * 0.9)) / 2 * maxY
+            sv.contentView.scroll(to: NSPoint(x: 0, y: y))
+            sv.reflectScrolledClipView(sv.contentView)
+        }
+        RunLoop.main.add(tick, forMode: .common)
+        phase("scrolling the stain cards (10 s)", 10)
+        tick.invalidate(); beat.invalidate()
         return
     }
     if a.contains("--paint-bench") {

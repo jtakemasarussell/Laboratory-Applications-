@@ -15,6 +15,11 @@ struct CellStyle: Hashable {
     var wrap = false
     var numFmt = 0
     var fontColor = "000000"
+    /// A custom number format ("0.0#", "yyyy/mm/dd", "\"1:\"#,##0"); overrides numFmt.
+    var numFmtCode: String? = nil
+    /// Border colour (RRGGBB); nil = automatic (black).
+    var lineColor: String? = nil
+    var italic = false
 
     func box(_ e: Edge = .thin) -> CellStyle { var s = self; s.l = e; s.r = e; s.t = e; s.b = e; return s }
 }
@@ -61,6 +66,7 @@ private func numText(_ d: Double) -> String {
 
 final class StyleBook {
     private var fonts: [String] = [], fills: [String] = [], borders: [String] = [], xfs: [String] = []
+    private var formats: [String] = []          // custom number formats, ids from 164
     private var cache: [CellStyle: Int] = [:]
 
     init() {
@@ -71,8 +77,8 @@ final class StyleBook {
         xfs.append("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>")
     }
 
-    private func fontXML(_ name: String, _ size: Double, _ bold: Bool, _ color: String) -> String {
-        "<font>" + (bold ? "<b/>" : "") + "<sz val=\"\(numText(size))\"/><color rgb=\"FF\(color)\"/><name val=\"\(xmlEscape(name))\"/><family val=\"2\"/></font>"
+    private func fontXML(_ name: String, _ size: Double, _ bold: Bool, _ color: String, _ italic: Bool = false) -> String {
+        "<font>" + (bold ? "<b/>" : "") + (italic ? "<i/>" : "") + "<sz val=\"\(numText(size))\"/><color rgb=\"FF\(color)\"/><name val=\"\(xmlEscape(name))\"/><family val=\"2\"/></font>"
     }
 
     private func index(_ list: inout [String], _ xml: String) -> Int {
@@ -83,13 +89,14 @@ final class StyleBook {
 
     func id(_ s: CellStyle) -> Int {
         if let i = cache[s] { return i }
-        let f = index(&fonts, fontXML(s.font, s.size, s.bold, s.fontColor))
+        let f = index(&fonts, fontXML(s.font, s.size, s.bold, s.fontColor, s.italic))
         var fillID = 0
         if let c = s.fill {
             fillID = index(&fills, "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF\(c)\"/><bgColor indexed=\"64\"/></patternFill></fill>")
         }
         func side(_ tag: String, _ e: Edge) -> String {
-            e == .none ? "<\(tag)/>" : "<\(tag) style=\"\(e.rawValue)\"><color auto=\"1\"/></\(tag)>"
+            let color = s.lineColor.map { "<color rgb=\"FF\($0)\"/>" } ?? "<color auto=\"1\"/>"
+            return e == .none ? "<\(tag)/>" : "<\(tag) style=\"\(e.rawValue)\">\(color)</\(tag)>"
         }
         let b = index(&borders, "<border>" + side("left", s.l) + side("right", s.r) + side("top", s.t) + side("bottom", s.b) + "<diagonal/></border>")
         var align = "<alignment"
@@ -97,7 +104,9 @@ final class StyleBook {
         if let v = s.v { align += " vertical=\"\(v)\"" }
         if s.wrap { align += " wrapText=\"1\"" }
         align += "/>"
-        let xf = "<xf numFmtId=\"\(s.numFmt)\" fontId=\"\(f)\" fillId=\"\(fillID)\" borderId=\"\(b)\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\">\(align)</xf>"
+        var fmt = s.numFmt
+        if let code = s.numFmtCode { fmt = 164 + index(&formats, code) }
+        let xf = "<xf numFmtId=\"\(fmt)\" fontId=\"\(f)\" fillId=\"\(fillID)\" borderId=\"\(b)\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\">\(align)</xf>"
         xfs.append(xf)
         cache[s] = xfs.count - 1
         return xfs.count - 1
@@ -105,6 +114,7 @@ final class StyleBook {
 
     func xml() -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+        + (formats.isEmpty ? "" : "<numFmts count=\"\(formats.count)\">" + formats.enumerated().map { "<numFmt numFmtId=\"\(164 + $0.offset)\" formatCode=\"\(xmlEscape($0.element))\"/>" }.joined() + "</numFmts>")
         + "<fonts count=\"\(fonts.count)\">" + fonts.joined() + "</fonts>"
         + "<fills count=\"\(fills.count)\">" + fills.joined() + "</fills>"
         + "<borders count=\"\(borders.count)\">" + borders.joined() + "</borders>"
@@ -122,6 +132,25 @@ final class Sheet {
     var heights: [Int: Double] = [:]
     var merges: [String] = []
     var selected = false
+    /// Excel's grey cell grid; off for a clean printed look.
+    var gridLines = true
+    // printing
+    var landscape = true
+    /// Pages tall when fitting to one page wide (0 = as many as it needs).
+    var fitHeight = 1
+    var margins = (left: 0.5, right: 0.5, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3)
+    var header: String? = nil
+    var footer: String? = nil
+    var centered = false
+    /// Rows a printed page should end after.
+    var pageBreaks: [Int] = []
+
+    /// Merges a block of cells: the value goes in the top-left cell; every cell gets the style, so fills
+    /// and borders cover the whole block.
+    func merge(_ r1: Int, _ c1: Int, _ r2: Int, _ c2: Int, _ v: CellValue, _ style: CellStyle) {
+        for r in r1...r2 { for c in c1...c2 { set(r, c, (r == r1 && c == c1) ? v : .blank, style) } }
+        if r1 != r2 || c1 != c2 { merges.append("\(ref(r1, c1)):\(ref(r2, c2))") }
+    }
     private var cells: [Int: [Int: (CellValue, CellStyle)]] = [:]
 
     init(name: String) { self.name = name }
@@ -141,7 +170,7 @@ final class Sheet {
     func xml(_ styles: StyleBook) -> String {
         var x = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
         x += "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>"
-        x += "<sheetViews><sheetView\(selected ? " tabSelected=\"1\"" : "") zoomScale=\"\(zoom)\" zoomScaleNormal=\"\(zoom)\" workbookViewId=\"0\"/></sheetViews>"
+        x += "<sheetViews><sheetView\(selected ? " tabSelected=\"1\"" : "") zoomScale=\"\(zoom)\" zoomScaleNormal=\"\(zoom)\"\(gridLines ? "" : " showGridLines=\"0\"") workbookViewId=\"0\"/></sheetViews>"
         x += "<sheetFormatPr baseColWidth=\"10\" defaultColWidth=\"10.6640625\" defaultRowHeight=\"16\"/>"
         if !cols.isEmpty {
             x += "<cols>"
@@ -177,8 +206,20 @@ final class Sheet {
         if !merges.isEmpty {
             x += "<mergeCells count=\"\(merges.count)\">" + merges.map { "<mergeCell ref=\"\($0)\"/>" }.joined() + "</mergeCells>"
         }
-        x += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
-        x += "<pageSetup paperSize=\"9\" orientation=\"landscape\" fitToHeight=\"1\" fitToWidth=\"1\"/>"
+        if centered { x += "<printOptions horizontalCentered=\"1\"/>" }
+        let m = margins
+        x += "<pageMargins left=\"\(m.left)\" right=\"\(m.right)\" top=\"\(m.top)\" bottom=\"\(m.bottom)\" header=\"\(m.header)\" footer=\"\(m.footer)\"/>"
+        x += "<pageSetup paperSize=\"9\" orientation=\"\(landscape ? "landscape" : "portrait")\" fitToHeight=\"\(fitHeight)\" fitToWidth=\"1\"/>"
+        if header != nil || footer != nil {
+            x += "<headerFooter>"
+            if let h = header { x += "<oddHeader>\(xmlEscape(h))</oddHeader>" }
+            if let f = footer { x += "<oddFooter>\(xmlEscape(f))</oddFooter>" }
+            x += "</headerFooter>"
+        }
+        if !pageBreaks.isEmpty {
+            x += "<rowBreaks count=\"\(pageBreaks.count)\" manualBreakCount=\"\(pageBreaks.count)\">"
+                + pageBreaks.map { "<brk id=\"\($0)\" max=\"16383\" man=\"1\"/>" }.joined() + "</rowBreaks>"
+        }
         x += "</worksheet>"
         return x
     }
@@ -292,223 +333,265 @@ private func excelSerial(_ d: Date) -> Double {
     return (d1.timeIntervalSince(d0) / 86400).rounded()
 }
 
-private let plateTop = 6      // sheet row of plate row A
-private let plateLeft = 14    // column N = plate column 1
 
-/// The Staining sheet (染色 in the original template): same cell positions, fonts, borders and formulas as the hand-made template.
-func buildStainSheet(_ e: Experiment, _ st: Settings) -> Sheet {
-    let s = Sheet(name: "Staining")
-    s.zoom = 84
+// MARK: - The workbook
+//
+// Three sheets, each laid out on an even column grid so every section lines up and prints cleanly:
+//   Plan         A4 portrait, fit to the page width: samples, each stain with its antibodies and amounts,
+//                the blocking buffer, and the plate map with a legend.
+//   Plate map    A4 landscape on one page: the plate large enough to work from at the bench.
+//   Observation  A4 landscape: one row per stained well to fill in under the microscope.
+// One typeface, navy headings and light rules; the amounts and the NDS are live formulas.
+
+private enum XL {
+    static let font = "Calibri"
+    static let navy = "1E3A66", mid = "4A78B8", ink = "1F2937", muted = "6B7A90", rule = "D5DDE8", pale = "F2F5FA", line = "AEBACB"
+    static let good = "2F8F4E", bad = "C2362B"
+    static func text(_ size: Double = 11, bold: Bool = false, color: String = ink, h: String? = "left", wrap: Bool = false) -> CellStyle {
+        var c = CellStyle(font: font, size: size, bold: bold, h: h, wrap: wrap)
+        c.fontColor = color
+        return c
+    }
+    static func fmt(_ c: CellStyle, _ code: String) -> CellStyle { var x = c; x.numFmtCode = code; return x }
+    static func filled(_ c: CellStyle, _ hex: String) -> CellStyle { var x = c; x.fill = hex; return x }
+    /// A light rule under the cell.
+    static func ruled(_ c: CellStyle) -> CellStyle { var x = c; x.b = .thin; x.lineColor = rule; return x }
+    /// A table's heading row: small bold navy on a pale band, ruled underneath.
+    static func colHead(_ h: String? = "left") -> CellStyle {
+        var c = text(9.5, bold: true, color: navy, h: h)
+        c.fill = pale; c.b = .thin; c.lineColor = line
+        return c
+    }
+    /// A section title: small capitals in navy with a navy rule under the whole width.
+    static let section: CellStyle = { var c = text(10, bold: true, color: navy); c.b = .medium; c.lineColor = navy; return c }()
+    static let date = "yyyy/mm/dd"
+    static let dilution = "\"1:\"0"
+    static let microlitres = "#,##0.0##\" µL\""
+}
+
+private let gridFirst = 2, gridLast = 15         // B … O: the Plan sheet's 14 even columns
+private func pageHeader(_ e: Experiment) -> String {
+    "&L&\"Calibri,Bold\"&9ICC staining plan  ·  \(e.dateNumber)&R&\"Calibri\"&9\(Brand.department)"
+}
+private let pageFooter = "&L&\"Calibri\"&8Generated with \(Brand.appName)&R&\"Calibri\"&8Page &P of &N"
+
+/// The stain sets' amounts, worked out as the app does.
+private func stainLine(_ set: StainSet) -> String {
+    // Japanese keyboards type full-width brackets: "TH（mouse)" is still TH
+    let first = set.primaries.map { markerName($0.name.replacingOccurrences(of: "（", with: "(").replacingOccurrences(of: "）", with: ")")) }
+        .filter { !$0.isEmpty }.joined(separator: " + ")
+    let second = set.secondaries.map { $0.name.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " + ")
+    return [first, second].filter { !$0.isEmpty }.joined(separator: "  →  ")
+}
+
+/// The main sheet: everything needed to run the stain, on A4 pages.
+func buildPlanSheet(_ e: Experiment, _ st: Settings) -> Sheet {
+    let s = Sheet(name: "Plan")
+    s.zoom = 100
     s.selected = true
-    s.cols = [(1, 1, 17.5), (2, 2, 24.6640625), (3, 3, 17.1640625), (4, 4, 18.33203125), (5, 5, 12.1640625),
-              (6, 6, 15.6640625), (7, 7, 22.5), (8, 8, 9.5), (9, 9, 11.33203125), (10, 10, 15.33203125),
-              (11, 13, 11.33203125), (14, 25, 4.6640625), (26, 26, 5.33203125), (27, 27, 5.6640625)]
-    s.heights = [1: 26, 2: 30, 3: 36, 4: 40, 16: 31.25, 31: 24, 35: 31.25, 36: 31.25, 37: 31.25, 38: 30, 39: 30, 40: 28.25]
-    for r in 5...15 { s.heights[r] = 34.25 }
-    for r in 17...28 { s.heights[r] = 41 }
-    for r in 32...34 { s.heights[r] = 34.25 }
+    s.gridLines = false
+    s.landscape = false
+    s.fitHeight = 0
+    s.centered = true
+    s.margins = (left: 0.45, right: 0.45, top: 0.7, bottom: 0.65, header: 0.3, footer: 0.3)
+    s.header = pageHeader(e)
+    s.footer = pageFooter
+    s.cols = [(1, 1, 1.5), (2, 2, 7), (3, 14, 7.6), (15, 15, 9), (16, 16, 1.5)]
+    var row = 1
+    func section(_ title: String) {
+        s.heights[row] = 22
+        s.merge(row, gridFirst, row, gridLast, .str(title.uppercased()), XL.section)
+        row += 1
+        s.heights[row] = 6
+        row += 1
+    }
 
-    let cal = CellStyle(font: "Calibri")
-    let arial16 = CellStyle(font: "Arial", size: 16)
-    let arial18 = CellStyle(font: "Arial", size: 18)
-
-    // Header
-    s.set(1, 1, .num(Double(e.dateNumber)), CellStyle(size: 16))
-    s.set(1, 2, .str("Sample(s)"), CellStyle(size: 16, h: "center"))
+    // Title band
+    s.heights[1] = 40
+    let band = XL.filled(XL.text(20, bold: true, color: "FFFFFF"), XL.navy)
+    s.merge(1, gridFirst, 1, 10, .str("ICC staining plan"), band)
+    s.merge(1, 11, 1, gridLast, .num(excelSerialDate(e.date)), XL.fmt(XL.filled(XL.text(16, bold: true, color: "FFFFFF", h: "right"), XL.navy), XL.date))
     let titles = e.samples.map { $0.title }.filter { !$0.isEmpty }
-    for (i, t) in titles.prefix(3).enumerated() {
-        let text = (i == 2 && titles.count > 3) ? titles[2...].joined(separator: ", ") : t
-        s.set(1 + i, 3, .str(text), CellStyle(size: 20, h: "left", v: i == 0 ? "center" : nil))
+    let line = titles.joined(separator: "   ·   ")
+    // many samples wrap onto more lines rather than running off the page
+    s.heights[2] = 22 + 15 * Double(max(0, (line.count - 1) / 95))
+    s.merge(2, gridFirst, 2, gridLast, .str(titles.isEmpty ? " " : line),
+            XL.filled(XL.text(11, bold: true, color: XL.navy, wrap: true), XL.pale))
+    s.heights[3] = 18
+    s.merge(3, gridFirst, 3, gridLast, .str("\(Brand.department)  ·  \(Brand.hospital)"), XL.text(9, color: XL.muted))
+    row = 5
+
+    // Samples
+    section("Samples")
+    s.heights[row] = 20
+    s.merge(row, 2, row, 3, .str("Code"), XL.colHead())
+    s.merge(row, 4, row, 8, .str("Name"), XL.colHead())
+    s.merge(row, 9, row, 10, .str("Day 0"), XL.colHead("center"))
+    s.merge(row, 11, row, 12, .str("Fixed"), XL.colHead("center"))
+    s.merge(row, 13, row, 15, .str("Day"), XL.colHead("center"))
+    row += 1
+    for smp in e.samples where !smp.title.isEmpty || smp.hasDay0 {
+        s.heights[row] = 20
+        let cell = XL.ruled(XL.text(11))
+        s.merge(row, 2, row, 3, .str(smp.code.trimmingCharacters(in: .whitespaces)), XL.ruled(XL.text(11, bold: true)))
+        s.merge(row, 4, row, 8, .str(smp.name.trimmingCharacters(in: .whitespaces)), cell)
+        s.merge(row, 9, row, 10, smp.hasDay0 ? .num(excelSerialDate(smp.day0)) : .blank, XL.fmt(XL.ruled(XL.text(11, h: "center")), XL.date))
+        s.merge(row, 11, row, 12, e.fixedDate(smp, st).map { .num(excelSerialDate($0)) } ?? .blank, XL.fmt(XL.ruled(XL.text(11, h: "center")), XL.date))
+        let day = e.dayText(smp, st)
+        s.merge(row, 13, row, 15, plainNumber(day).map { .num($0) } ?? (day.isEmpty ? .blank : .str(day)), XL.ruled(XL.text(11, bold: true, h: "center")))
+        row += 1
     }
-    s.set(3, 1, .str("Preparation"), CellStyle(size: 18, h: "left", v: nil))
+    row += 1
 
-    // Antibody table header
-    var th = arial16.box(); th.b = .none
-    s.set(4, 2, .str("Antibodies"), th)
-    var thWrap = th; thWrap.wrap = true
-    s.set(4, 3, .str("Company"), thWrap)
-    s.set(4, 4, .str("Cat#"), thWrap)
-    s.set(4, 5, .str("Dilution"), th)
-    var g4 = arial16; g4.h = "left"
-    s.set(4, 7, .str("1st Antibody"), g4)
-    s.set(4, 10, .str("2nd Antibody"), arial16)
-
-    // Stain sets
-    var r = 5
+    // Stains
+    section("Stains")
     for (idx, set) in e.sets.enumerated() {
-        let hdr = r
         let vol = e.volume(set, st)
-        var left18 = arial18; left18.h = "left"
-        s.set(hdr, 7, .num(Double(e.wellCount(set))), left18)
-        s.set(hdr, 8, .num(vol), arial18)
-        s.set(hdr, 9, .str("μL"), arial18)
-        s.set(hdr, 11, .num(vol), arial18)
-        s.set(hdr, 12, .str("μL"), arial18)
-
-        let n = max(set.primaries.count, set.secondaries.count, 1)
-        for k in 0..<n {
-            let row = hdr + 1 + k
-            s.heights[row] = 34.25
-            if k == 0 { s.set(row, 1, .blank, CellStyle(font: "Arial", size: 16, fill: fillHex(set, idx), h: "left")) }
-
-            var bName = arial18.box(); bName.h = "left"
-            var bComp = arial18.box(); bComp.wrap = true
-            var bCat = arial18.box(); bCat.h = "left"; bCat.wrap = true
-            var bDil = arial18.box(); bDil.h = "center"
-            let bPlain = arial18.box()
-            var bRight = arial18.box(); bRight.h = "right"
-
-            if k < set.primaries.count {
-                let p = set.primaries[k]
-                s.set(row, 2, .str(p.name), bName)
-                s.set(row, 3, .str(p.company), bComp)
-                s.setAuto(row, 4, p.cat, bCat)
-                s.set(row, 5, p.dilution > 0 ? .num(p.dilution) : .blank, bDil)   // blank until a dilution is entered
-                s.set(row, 7, .str(p.name), bPlain)
-                s.set(row, 8, .formula("\(ref(hdr, 8))/\(ref(row, 5))", p.dilution > 0 ? vol / p.dilution : nil), bPlain)
-            } else {
-                s.set(row, 2, .blank, bName); s.set(row, 3, .blank, bComp); s.set(row, 4, .blank, bCat)
-                s.set(row, 5, .blank, bDil); s.set(row, 7, .blank, bPlain); s.set(row, 8, .blank, bPlain)
-            }
-            if k < set.primaries.count { s.set(row, 9, .str("μL"), arial18) }   // unit only beside a real amount
-
-            if k < set.secondaries.count {
-                let q = set.secondaries[k]
-                s.set(row, 10, .str(q.name), bDil)
-                if q.dilution > 0, q.dilution.isFinite {
-                    s.set(row, 11, .formula("\(ref(hdr, 11))/\(fmtNum(q.dilution))", vol / q.dilution), bRight)
-                } else {
-                    s.set(row, 11, .blank, bRight)   // no dilution entered yet
-                }
-            } else {
-                s.set(row, 10, .blank, bDil); s.set(row, 11, .blank, bRight)
-            }
-            if k < set.secondaries.count { s.set(row, 12, .str("μL"), arial18) }
+        let report = panel(set)
+        let hdr = row
+        s.heights[hdr] = 24
+        let fill = fillHex(set, idx)
+        s.merge(hdr, 2, hdr, 3, .str("Stain \(idx + 1)"), XL.filled(XL.text(11, bold: true, color: isDark(fill) ? "FFFFFF" : XL.ink, h: "center"), fill))
+        s.merge(hdr, 4, hdr, 11, .str(stainLine(set)), XL.text(11, bold: true))
+        s.merge(hdr, 12, hdr, 13, .num(Double(e.wellCount(set))), XL.fmt(XL.text(10, color: XL.muted, h: "right"), "0\" wells\""))
+        s.merge(hdr, 14, hdr, 15, .num(vol), XL.fmt(XL.text(11, bold: true, color: XL.mid, h: "right"), "#,##0.##\" µL\""))
+        row += 1
+        // primaries
+        s.heights[row] = 18
+        s.merge(row, 2, row, 5, .str("Primary antibody"), XL.colHead())
+        s.merge(row, 6, row, 8, .str("Company"), XL.colHead())
+        s.merge(row, 9, row, 10, .str("Cat#"), XL.colHead())
+        s.merge(row, 11, row, 12, .str("Dilution"), XL.colHead("center"))
+        s.merge(row, 13, row, 15, .str("Amount"), XL.colHead("right"))
+        row += 1
+        let volRef = ref(hdr, 14)
+        for p in set.primaries where !p.name.trimmingCharacters(in: .whitespaces).isEmpty {
+            s.heights[row] = 20
+            s.merge(row, 2, row, 5, .str(p.name), XL.ruled(XL.text(11, bold: true)))
+            s.merge(row, 6, row, 8, .str(p.company), XL.ruled(XL.text(10, color: XL.muted)))
+            let catV: CellValue = plainNumber(p.cat).map { .num($0) } ?? (p.cat.trimmingCharacters(in: .whitespaces).isEmpty ? .blank : .str(p.cat))
+            s.merge(row, 9, row, 10, catV, XL.ruled(XL.text(10, color: XL.muted)))
+            s.merge(row, 11, row, 12, p.dilution > 0 ? .num(p.dilution) : .blank, XL.fmt(XL.ruled(XL.text(11, h: "center")), XL.dilution))
+            s.merge(row, 13, row, 15, p.dilution > 0 ? .formula("\(volRef)/\(ref(row, 11))", vol / p.dilution) : .blank,
+                    XL.fmt(XL.ruled(XL.text(11, bold: true, h: "right")), XL.microlitres))
+            row += 1
         }
-        r = hdr + n + 2
+        // secondaries
+        s.heights[row] = 18
+        s.merge(row, 2, row, 10, .str("Secondary / counterstain"), XL.colHead())
+        s.merge(row, 11, row, 12, .str("Dilution"), XL.colHead("center"))
+        s.merge(row, 13, row, 15, .str("Amount"), XL.colHead("right"))
+        row += 1
+        for q in set.secondaries where !q.name.trimmingCharacters(in: .whitespaces).isEmpty {
+            s.heights[row] = 20
+            s.merge(row, 2, row, 10, .str(q.name), XL.ruled(XL.text(11, bold: true)))
+            let ok = q.dilution > 0 && q.dilution.isFinite
+            s.merge(row, 11, row, 12, ok ? .num(q.dilution) : .blank, XL.fmt(XL.ruled(XL.text(11, h: "center")), XL.dilution))
+            s.merge(row, 13, row, 15, ok ? .formula("\(volRef)/\(ref(row, 11))", vol / q.dilution) : .blank,
+                    XL.fmt(XL.ruled(XL.text(11, bold: true, h: "right")), XL.microlitres))
+            row += 1
+        }
+        // the compatibility check, in a word
+        s.heights[row] = 18
+        let verdict: (String, String)
+        switch report.verdict {
+        case .ok: verdict = ("✓  Every pairing checks out", XL.good)
+        case .problem: verdict = ("✗  " + (report.issues.first ?? "A pairing cannot work"), XL.bad)
+        case .unknown: verdict = ("?  Some antibodies cannot be checked", XL.muted)
+        }
+        s.merge(row, 2, row, gridLast, .str(verdict.0), XL.text(9.5, bold: true, color: verdict.1))
+        row += 2
     }
 
-    // Plate map, N6:Y13
+    // Blocking buffer
+    section("Blocking buffer")
+    let mL = e.blocking(st)
+    s.heights[row] = 24
+    s.merge(row, 2, row, 6, .str("Blocking buffer"), XL.ruled(XL.text(11)))
+    s.merge(row, 7, row, 8, .num(mL), XL.fmt(XL.ruled(XL.text(13, bold: true, color: XL.navy, h: "right")), "#,##0.0##\" mL\""))
+    s.merge(row, 9, row, 12, .str("NDS (\(fmtNum(st.ndsPerMl)) µL per mL)"), XL.ruled(XL.text(11, h: "right")))
+    s.merge(row, 13, row, 15, .formula("\(ref(row, 7))*\(fmtNum(st.ndsPerMl))", mL * st.ndsPerMl),
+            XL.fmt(XL.ruled(XL.text(13, bold: true, color: XL.navy, h: "right")), "#,##0.##\" µL\""))
+    row += 3
+
+    // Plate map: wells C…N, row letters in B, row labels in O. On longer plans it starts a new page.
+    if row > 34 { s.pageBreaks.append(row - 1) }
+    section("Plate map")
     let ids = e.sets.map { $0.id }
-    func stained(_ i: Int, _ j: Int) -> Bool {
-        guard (0..<8).contains(i), (0..<12).contains(j), let id = e.wells[i * 12 + j] else { return false }
-        return ids.contains(id)
-    }
-    for j in 0..<12 where !e.topLabels[j].trimmingCharacters(in: .whitespaces).isEmpty {
-        s.setAuto(4, plateLeft + j, e.topLabels[j], cal)
-    }
+    s.heights[row] = 26
+    for j in 0..<12 { s.setAuto(row, 3 + j, e.topLabels[j], XL.text(7.5, color: XL.muted, h: "center", wrap: true)) }
+    row += 1
+    s.heights[row] = 16
+    for j in 0..<12 { s.set(row, 3 + j, .num(Double(j + 1)), XL.text(9, bold: true, color: XL.muted, h: "center")) }
+    row += 1
     for i in 0..<8 {
-        if !e.leftLabels[i].trimmingCharacters(in: .whitespaces).isEmpty {
-            s.setAuto(plateTop + i, 13, e.leftLabels[i], CellStyle(h: "center"))
-        }
+        s.heights[row] = 30
+        s.set(row, 2, .str(rowLetters[i]), XL.text(9, bold: true, color: XL.muted, h: "center"))
         for j in 0..<12 {
             let w = i * 12 + j
             let text = e.label(w)
-            let isNumber = plainNumber(text) != nil
-            // numbers and short tags such as "#381" are readable at 11 pt; longer notes shrink to fit the narrow well
-            let short = text.trimmingCharacters(in: .whitespaces).count <= 5
-            var cs = CellStyle(size: (isNumber || short) ? 11 : 8, h: "center", wrap: !short)
-            // thick line around the plate and around each block of stained wells, as in the template
-            let me = stained(i, j)
-            cs.l = (j == 0 || stained(i, j - 1) != me) ? .medium : .thin
-            cs.r = (j == 11 || stained(i, j + 1) != me) ? .medium : .thin
-            cs.t = (i == 0 || stained(i - 1, j) != me) ? .medium : .thin
-            cs.b = (i == 7 || stained(i + 1, j) != me) ? .medium : .thin
+            var cs = XL.text(text.count <= 5 ? 9 : 7, h: "center", wrap: true)
+            cs.lineColor = XL.line
+            cs.l = .thin; cs.r = .thin; cs.t = .thin; cs.b = .thin
             if let id = e.wells[w], let k = ids.firstIndex(of: id) {
                 let hex = fillHex(e.sets[k], k)
                 cs.fill = hex
                 if isDark(hex) { cs.fontColor = "FFFFFF" }
             }
-            s.setAuto(plateTop + i, plateLeft + j, text, cs)
+            s.setAuto(row, 3 + j, text, cs)
         }
+        s.setAuto(row, 15, e.leftLabels[i], XL.text(8, color: XL.muted, wrap: true))
+        row += 1
     }
-
-    // Sample list, Day 0, blocking buffer
-    let sampleRow = max(17, r)
-    for (i, t) in titles.enumerated() {
-        s.heights[sampleRow + i] = 41
-        s.set(sampleRow + i, 2, .str(t), CellStyle(size: 20, h: "left", v: i == 0 ? "center" : nil))
+    row += 1
+    for (k, set) in e.sets.enumerated() {
+        s.heights[row] = 18
+        s.set(row, 2, .blank, XL.filled(XL.text(), fillHex(set, k)))
+        s.merge(row, 3, row, gridLast, .str("Stain \(k + 1)   \(stainLine(set))   ·   \(e.wellCount(set)) wells"), XL.text(10))
+        row += 1
     }
-    // Day 0 / Day. One shared pair of rows (the template layout) when every experiment has the
-    // same values; otherwise one row per experiment.
-    let day0Row = max(21, sampleRow + titles.count + 1)
-    let dated = e.samples.filter { !$0.title.isEmpty || $0.hasDay0 || !e.dayText($0, st).isEmpty }
-    let dateStyle = CellStyle(size: 18, h: "center", numFmt: 14)
-    let label18 = CellStyle(font: "Arial", size: 18, h: "center")
-    let cal18 = CellStyle(size: 18, h: "center")
-    func serial(_ d: Date?) -> CellValue { d.map { .num(excelSerial($0)) } ?? .blank }
-    func sameDays(_ a: Sample, _ b: Sample) -> Bool {
-        a.hasDay0 == b.hasDay0 && e.dayText(a, st) == e.dayText(b, st)
-            && (!a.hasDay0 || excelSerial(a.day0) == excelSerial(b.day0))
-            && e.fixedDate(a, st).map(excelSerial) == e.fixedDate(b, st).map(excelSerial)
-    }
-    var lastDayRow = day0Row + 2
-    if dated.isEmpty || dated.count == 1 || dated.allSatisfy({ sameDays($0, dated[0]) }) {
-        // the template's layout, plus the date the cells were fixed on the row below
-        let first = dated.first
-        for r in 0..<3 { s.heights[day0Row + r] = 41 }
-        s.set(day0Row, 2, .str("Day 0 ="), label18)
-        s.set(day0Row, 3, (first?.hasDay0 ?? false) ? serial(first?.day0) : .blank, dateStyle)
-        s.set(day0Row + 1, 2, .str("Day"), cal18)
-        s.setAuto(day0Row + 1, 3, first.map { e.dayText($0, st) } ?? "", cal18)
-        s.set(day0Row + 2, 2, .str("Date fixed ="), label18)
-        s.set(day0Row + 2, 3, serial(first.flatMap { e.fixedDate($0, st) }), dateStyle)
-    } else {
-        for (i, smp) in dated.enumerated() {
-            let row = day0Row + i
-            s.heights[row] = 41
-            s.set(row, 2, .str(smp.tag.isEmpty ? "Day 0 =" : "\(smp.tag)  Day 0 ="), label18)
-            s.set(row, 3, smp.hasDay0 ? serial(smp.day0) : .blank, dateStyle)
-            s.set(row, 4, .str("Day"), cal18)
-            s.setAuto(row, 5, e.dayText(smp, st), cal18)
-            s.set(row, 6, .str("Fixed"), cal18)
-            s.set(row, 7, serial(e.fixedDate(smp, st)), dateStyle)
-            lastDayRow = max(lastDayRow, row)
-        }
-    }
-
-    let blockRow = max(31, lastDayRow + 3)
-    s.heights[blockRow] = 24; s.heights[blockRow + 1] = 34.25
-    let bb = CellStyle(size: 18, h: "center").box()
-    let mL = e.blocking(st)
-    s.set(blockRow, 2, .str("Blocking Buffer (mL)"), bb)
-    s.set(blockRow, 3, .str("NDS (μL)"), bb)
-    s.set(blockRow + 1, 2, .num(mL), bb)
-    s.set(blockRow + 1, 3, .formula("\(ref(blockRow + 1, 2))*\(fmtNum(st.ndsPerMl))", mL * st.ndsPerMl), bb)
-
-    // Department and credit, below everything the template uses
-    s.heights[blockRow + 3] = 20; s.heights[blockRow + 4] = 20
-    s.set(blockRow + 3, 2, .str(brandLine), CellStyle(size: 11, h: "left"))
-    s.set(blockRow + 4, 2, .str(creditLine), CellStyle(size: 11, h: "left"))
+    row += 1
+    var small = XL.text(8.5, color: XL.muted); small.italic = true
+    s.merge(row, 2, row, gridLast, .str(creditLine), small)
     return s
 }
 
-/// A large, printable copy of the plate map with row letters, column numbers and a stain legend.
+/// The plate on its own landscape page, large enough to work from.
 func buildPlateSheet(_ e: Experiment, _ st: Settings) -> Sheet {
-    let s = Sheet(name: "Plate layout")
+    let s = Sheet(name: "Plate map")
     s.zoom = 90
-    s.cols = [(1, 1, 16), (2, 2, 5), (3, 14, 12)]
+    s.gridLines = false
+    s.landscape = true
+    s.fitHeight = 1
+    s.centered = true
+    s.margins = (left: 0.4, right: 0.4, top: 0.6, bottom: 0.55, header: 0.25, footer: 0.25)
+    s.header = pageHeader(e)
+    s.footer = pageFooter
+    s.cols = [(1, 1, 1.5), (2, 2, 4), (3, 14, 11.5), (15, 15, 15), (16, 16, 1.5)]
     let titles = e.samples.map { $0.title }.filter { !$0.isEmpty }
-    s.heights[1] = 30
-    s.set(1, 1, .str(([String(e.dateNumber)] + titles).joined(separator: "   ")), CellStyle(size: 18, bold: true, h: "left"))
-    s.heights[2] = 30; s.heights[3] = 24
+    s.heights[1] = 34
+    let band = XL.filled(XL.text(18, bold: true, color: "FFFFFF"), XL.navy)
+    s.merge(1, 2, 1, 10, .str("Plate map"), band)
+    s.merge(1, 11, 1, 15, .num(excelSerialDate(e.date)), XL.fmt(XL.filled(XL.text(14, bold: true, color: "FFFFFF", h: "right"), XL.navy), XL.date))
+    let line = titles.joined(separator: "   ·   ")
+    s.heights[2] = 20 + 15 * Double(max(0, (line.count - 1) / 140))
+    s.merge(2, 2, 2, 15, .str(titles.isEmpty ? " " : line), XL.filled(XL.text(11, bold: true, color: XL.navy, wrap: true), XL.pale))
+    s.heights[3] = 8
+    s.heights[4] = 22; s.heights[5] = 18
     for j in 0..<12 {
-        s.setAuto(2, 3 + j, e.topLabels[j], CellStyle(size: 12, h: "left"))
-        s.set(3, 3 + j, .num(Double(j + 1)), CellStyle(size: 12, bold: true, h: "center"))
+        s.setAuto(4, 3 + j, e.topLabels[j], XL.text(9, color: XL.muted, h: "center", wrap: true))
+        s.set(5, 3 + j, .num(Double(j + 1)), XL.text(11, bold: true, color: XL.muted, h: "center"))
     }
     let ids = e.sets.map { $0.id }
     for i in 0..<8 {
-        let row = 4 + i
-        s.heights[row] = 54
-        s.setAuto(row, 1, e.leftLabels[i], CellStyle(size: 12, h: "center", wrap: true))
-        s.set(row, 2, .str(rowLetters[i]), CellStyle(size: 12, bold: true, h: "center"))
+        let row = 6 + i
+        s.heights[row] = 44
+        s.set(row, 2, .str(rowLetters[i]), XL.text(11, bold: true, color: XL.muted, h: "center"))
         for j in 0..<12 {
             let w = i * 12 + j
-            var cs = CellStyle(size: 12, h: "center", wrap: true)
-            cs.l = j == 0 ? .medium : .thin
-            cs.r = j == 11 ? .medium : .thin
-            cs.t = i == 0 ? .medium : .thin
-            cs.b = i == 7 ? .medium : .thin
+            var cs = XL.text(11, h: "center", wrap: true)
+            cs.lineColor = XL.line
+            cs.l = .thin; cs.r = .thin; cs.t = .thin; cs.b = .thin
             if let id = e.wells[w], let k = ids.firstIndex(of: id) {
                 let hex = fillHex(e.sets[k], k)
                 cs.fill = hex
@@ -516,19 +599,15 @@ func buildPlateSheet(_ e: Experiment, _ st: Settings) -> Sheet {
             }
             s.setAuto(row, 3 + j, e.label(w), cs)
         }
+        s.setAuto(row, 15, e.leftLabels[i], XL.text(10, color: XL.muted, wrap: true))
     }
-    var row = 13
+    var row = 15
     for (k, set) in e.sets.enumerated() {
-        s.heights[row] = 26
-        s.set(row, 2, .blank, CellStyle(fill: fillHex(set, k)).box())
-        let first = set.primaries.map { $0.name.trimmingCharacters(in: .whitespaces) }.joined(separator: " + ")
-        let second = set.secondaries.map { $0.name.trimmingCharacters(in: .whitespaces) }.joined(separator: " + ")
-        s.set(row, 3, .str("Stain \(k + 1):  \(first)   →   \(second)   (\(e.wellCount(set)) wells)"), CellStyle(size: 14, h: "left"))
+        s.heights[row] = 20
+        s.set(row, 2, .blank, XL.filled(XL.text(), fillHex(set, k)))
+        s.merge(row, 3, row, 15, .str("Stain \(k + 1)   \(stainLine(set))   ·   \(e.wellCount(set)) wells"), XL.text(11))
         row += 1
     }
-    row += 1
-    s.set(row, 3, .str(brandLine), CellStyle(size: 11, h: "left"))
-    s.set(row + 1, 3, .str(creditLine), CellStyle(size: 11, h: "left"))
     return s
 }
 
@@ -536,39 +615,53 @@ func buildPlateSheet(_ e: Experiment, _ st: Settings) -> Sheet {
 func buildObservationSheet(_ e: Experiment) -> Sheet {
     let s = Sheet(name: "Observation")
     s.zoom = 95
-    s.cols = [(5, 5, 15.6640625), (10, 10, 19.33203125), (11, 11, 22), (13, 13, 13.33203125),
-              (18, 18, 14.5), (19, 19, 13), (20, 20, 15.33203125), (21, 21, 14.6640625)]
-    let base = CellStyle()
-    var row = 4
-    for set in e.sets {
+    s.gridLines = false
+    s.landscape = true
+    s.fitHeight = 0
+    s.centered = true
+    s.margins = (left: 0.4, right: 0.4, top: 0.65, bottom: 0.6, header: 0.25, footer: 0.25)
+    s.header = pageHeader(e)
+    s.footer = pageFooter
+    s.cols = [(1, 3, 6), (4, 4, 14), (5, 5, 16), (6, 6, 16), (7, 7, 2), (8, 12, 10), (13, 17, 10), (18, 18, 2), (19, 24, 11)]
+    let headS = XL.colHead("center")
+    let cell = XL.ruled(XL.text(10.5, h: "center"))
+    let ratio = XL.fmt(XL.ruled(XL.text(10.5, h: "center")), "0.00")
+    var row = 2
+    for (k, set) in e.sets.enumerated() {
         let wells = (0..<96).filter { e.wells[$0] == set.id }
         if wells.isEmpty { continue }
         let markers = set.primaries.map { markerName($0.name) }.filter { !$0.isEmpty }
         let dapiCol = 13 + markers.count
         let ratioCol = max(19, dapiCol + 2)
-
-        s.heights[row] = 30
-        s.set(row, 1, .str("Plate"), base)
-        s.set(row, 2, .str("Well"), base)
-        s.set(row, 4, .str("Cell"), base)
-        s.set(row, 5, .str("Condition"), base)
-        s.set(row, 6, .str("Staining"), base)
-        s.set(row, 8, .str("Findings"), base)
-        for (m, name) in markers.enumerated() {
-            s.set(row, 13 + m, .str(name), base)
-            s.set(row, ratioCol + m, .str(name), base)
+        s.heights[row] = 22
+        let fill = fillHex(set, k)
+        s.merge(row, 1, row, 3, .str("Stain \(k + 1)"), XL.filled(XL.text(11, bold: true, color: isDark(fill) ? "FFFFFF" : XL.ink, h: "center"), fill))
+        s.merge(row, 4, row, 12, .str(stainLine(set)), XL.text(11, bold: true))
+        row += 2
+        s.heights[row] = 20
+        for (c, t) in [(1, "Plate"), (2, "Well"), (4, "Cell"), (5, "Condition"), (6, "Staining"), (8, "Findings")] {
+            s.set(row, c, .str(t), headS)
         }
-        s.set(row, dapiCol, .str("DAPI"), base)
+        s.set(row, 3, .blank, headS)
+        for c in 9...12 { s.set(row, c, .blank, headS) }
+        for (m, name) in markers.enumerated() {
+            s.set(row, 13 + m, .str(name), headS)
+            s.set(row, ratioCol + m, .str(name), headS)
+        }
+        s.set(row, dapiCol, .str("DAPI"), headS)
         row += 1
         for (n, w) in wells.enumerated() {
-            s.heights[row] = 30
-            s.set(row, 2, .str(rowLetters[w / 12]), base)
-            s.set(row, 3, .num(Double(w % 12 + 1)), base)
-            let cell = e.leftLabels[w / 12].trimmingCharacters(in: .whitespaces)
-            if !cell.isEmpty { s.setAuto(row, 4, cell, base) }
-            if n == 0 { s.set(row, 6, .str(markers.joined(separator: "/")), base) }
+            s.heights[row] = 20
+            for c in [1, 4, 5, 6, 8, 9, 10, 11, 12] { s.set(row, c, .blank, cell) }
+            s.set(row, 2, .str(rowLetters[w / 12]), cell)
+            s.set(row, 3, .num(Double(w % 12 + 1)), cell)
+            let lbl = e.leftLabels[w / 12].trimmingCharacters(in: .whitespaces)
+            if !lbl.isEmpty { s.setAuto(row, 4, lbl, cell) }
+            if n == 0 { s.set(row, 6, .str(markers.joined(separator: "/")), cell) }
+            for m in markers.indices { s.set(row, 13 + m, .blank, cell) }
+            s.set(row, dapiCol, .blank, cell)
             for m in markers.indices {
-                s.set(row, ratioCol + m, .formulaError("\(ref(row, 13 + m))/\(ref(row, dapiCol))", "#DIV/0!"), base)
+                s.set(row, ratioCol + m, .formulaError("\(ref(row, 13 + m))/\(ref(row, dapiCol))", "#DIV/0!"), ratio)
             }
             row += 1
         }
@@ -577,6 +670,9 @@ func buildObservationSheet(_ e: Experiment) -> Sheet {
     return s
 }
 
+/// A date as Excel's serial day number (the cell's number format shows it as a date).
+private func excelSerialDate(_ d: Date) -> Double { excelSerial(d) }
+
 func buildWorkbook(_ e: Experiment, _ st: Settings) -> Data {
-    packageWorkbook([buildStainSheet(e, st), buildPlateSheet(e, st), buildObservationSheet(e)])
+    packageWorkbook([buildPlanSheet(e, st), buildPlateSheet(e, st), buildObservationSheet(e)])
 }

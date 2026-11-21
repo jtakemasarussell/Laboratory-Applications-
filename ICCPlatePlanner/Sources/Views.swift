@@ -195,9 +195,6 @@ struct ContentView: View {
         }
         .overlay(FxOverlay().allowsHitTesting(false))
         .overlay(ConfettiLayer())
-        .coordinateSpace(name: fxSpace)
-        .onPreferenceChange(GridFrameKey.self) { FxCenter.shared.gridFrame = $0 }
-        .onPreferenceChange(CardFramesKey.self) { FxCenter.shared.cardFrames = $0 }
         .tint(Brand.navy)
         .preferredColorScheme(.light)   // the department look is a white page with navy accents
     }
@@ -317,9 +314,6 @@ struct OutputStrip: View {
                 .help("Back to the automatic name (date + sample numbers)")
             }
             Spacer()
-            Toggle("Open in Excel after saving", isOn: $store.openAfterExport)
-                .toggleStyle(.checkbox).font(.system(size: 12))
-                .fixedSize()
         }
         .padding(.horizontal, 20)
         .frame(height: 34)
@@ -348,8 +342,10 @@ struct ExperimentSection: View {
 
     var body: some View {
         Card(title: "Experiment", icon: "calendar") {
-            DatePicker("Staining date", selection: Binding(get: { store.exp.date }, set: { store.exp.date = fixCentury($0) }), displayedComponents: .date)
-                .frame(maxWidth: 260, alignment: .leading)
+            HStack(spacing: 8) {
+                Text("Staining date")
+                LiteDateField(date: Binding(get: { store.exp.date }, set: { store.exp.date = fixCentury($0) }))
+            }
             Eyebrow(text: "Samples · Day 0, date fixed and Day", color: Brand.mid, size: 9.5)
             ForEach(store.exp.samples) { s in
                 let b = $store.exp.samples.row(s)
@@ -365,13 +361,9 @@ struct ExperimentSection: View {
                     }
                     HStack(spacing: 8) {
                         Toggle("Day 0", isOn: b.hasDay0).font(.system(size: 12))
-                        DatePicker("", selection: Binding(get: { b.wrappedValue.day0 }, set: { b.wrappedValue.day0 = fixCentury($0) }), displayedComponents: .date)
-                            .labelsHidden()
-                            .disabled(!s.hasDay0)
+                        LiteDateField(date: Binding(get: { b.wrappedValue.day0 }, set: { b.wrappedValue.day0 = fixCentury($0) }), enabled: s.hasDay0)
                         Text("Fixed").font(.system(size: 12)).padding(.leading, 8)
-                        DatePicker("", selection: fixedBinding(b), displayedComponents: .date)
-                            .labelsHidden()
-                            .disabled(!s.hasDay0)
+                        LiteDateField(date: fixedBinding(b), enabled: s.hasDay0)
                         if s.hasDay0 {
                             if s.fixed == nil {
                                 Pill(text: "AUTO", color: Brand.navy)
@@ -1344,4 +1336,53 @@ let fxProbe = ProcessInfo.processInfo.environment["ICC_FX_PROBE"] ?? ""
 func setAccentHex(_ set: StainSet, _ i: Int) -> String {
     let c = NSColor(setAccent(set, i)).usingColorSpace(.sRGB) ?? NSColor.gray
     return String(format: "%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
+}
+
+
+/// A light date field: the date as text with a day up / day down, and the calendar in a popover when
+/// clicked. (The system date picker redrew itself on every frame while the list scrolled; sixteen of
+/// them made scrolling lag.)
+struct LiteDateField: View {
+    let date: Binding<Date>
+    var enabled = true
+    private let open = State(initialValue: false)
+    private static let format: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/MM/dd"
+        return f
+    }()
+
+    private func step(_ days: Int) {
+        if let d = Calendar.current.date(byAdding: .day, value: days, to: date.wrappedValue) { date.wrappedValue = d }
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Button { open.wrappedValue.toggle() } label: {
+                Text(Self.format.string(from: date.wrappedValue))
+                    .font(.system(size: 12.5).monospacedDigit())
+                    .foregroundColor(Brand.ink)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: .textBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(nsColor: .separatorColor)))
+            }
+            .buttonStyle(.plain)
+            .help("Click for a calendar")
+            .popover(isPresented: open.projectedValue, arrowEdge: .bottom) {
+                DatePicker("", selection: date, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .labelsHidden()
+                    .padding(10)
+            }
+            VStack(spacing: 0) {
+                Button { step(1) } label: { Image(systemName: "chevron.up").font(.system(size: 7, weight: .bold)).frame(width: 14, height: 9) }
+                Button { step(-1) } label: { Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).frame(width: 14, height: 9) }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("A day later / earlier")
+        }
+        .opacity(enabled ? 1 : 0.45)
+        .disabled(!enabled)
+    }
 }

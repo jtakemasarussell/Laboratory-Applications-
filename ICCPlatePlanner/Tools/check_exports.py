@@ -104,10 +104,10 @@ def check(case, xlsx, state):
 
     wb = openpyxl.load_workbook(xlsx)
     wbv = openpyxl.load_workbook(xlsx, data_only=True)
-    if wb.sheetnames != ["Staining", "Plate layout", "Observation"]:
+    if wb.sheetnames != ["Plan", "Plate map", "Observation"]:
         err(case, f"sheet names {wb.sheetnames}")
         return
-    ws, wsv = wb["Staining"], wbv["Staining"]
+    ws, wsv = wb["Plan"], wbv["Plan"]
 
     sets = exp["sets"]
     ids = [s["id"] for s in sets]
@@ -126,13 +126,26 @@ def check(case, xlsx, state):
                     return tag_of(smp)
         return exp["wellText"][w]
 
-    # 2. header date
-    d = local_date(exp["date"])
-    if ws["A1"].value != d.year * 10000 + d.month * 100 + d.day:
-        err(case, f"A1 date {ws['A1'].value} != {d}")
+    def col_b(row):
+        v = ws.cell(row, 2).value
+        return v if isinstance(v, str) else None
 
-    # 3. stain sets: well counts, volumes, antibody amounts
-    r = 5
+    def find(text, start=1):
+        return next((row for row in range(start, ws.max_row + 1) if col_b(row) == text), None)
+
+    def as_date(v):
+        return v.date() if isinstance(v, datetime.datetime) else None
+
+    def named(items):
+        """Antibodies with a name: the sheet lists only those."""
+        return [x for x in items if x["name"].strip(" \t") != ""]
+
+    # 2. header date (K1, shown as a date)
+    d = local_date(exp["date"])
+    if as_date(ws.cell(1, 11).value) != d:
+        err(case, f"title date {ws.cell(1, 11).value} != {d}")
+
+    # 3. stain sets: well counts, volumes, antibody amounts and their formulas
     total_need_sets = 0.0
     for idx, s in enumerate(sets):
         n = sum(1 for w in wells if w == s["id"])
@@ -141,88 +154,96 @@ def check(case, xlsx, state):
             total_need_sets += vol
         if s["secondaries"]:
             total_need_sets += vol
-        hdr = r
-        if not same(ws.cell(hdr, 7).value, n):
-            err(case, f"stain {idx+1}: wells G{hdr}={ws.cell(hdr,7).value} expected {n}")
-        for col in (8, 11):
-            if not same(ws.cell(hdr, col).value, vol):
-                err(case, f"stain {idx+1}: volume at row {hdr} col {col} = {ws.cell(hdr,col).value} expected {vol}")
-        rows = max(len(s["primaries"]), len(s["secondaries"]), 1)
+        hdr = find(f"Stain {idx + 1}")
+        if hdr is None:
+            err(case, f"stain {idx+1}: block not found")
+            continue
+        if not same(ws.cell(hdr, 12).value, n):
+            err(case, f"stain {idx+1}: wells L{hdr}={ws.cell(hdr, 12).value} expected {n}")
+        if not same(ws.cell(hdr, 14).value, vol):
+            err(case, f"stain {idx+1}: volume N{hdr}={ws.cell(hdr, 14).value} expected {vol}")
         want_fill = s["colorHex"].upper() if hex_ok(s.get("colorHex")) else PALETTE[idx % len(PALETTE)]
-        if fill_of(ws.cell(hdr + 1, 1)) != want_fill:
-            err(case, f"stain {idx+1}: swatch colour {fill_of(ws.cell(hdr+1,1))} expected {want_fill}")
-        for k in range(rows):
-            row = hdr + 1 + k
-            if k < len(s["primaries"]):
-                p = s["primaries"][k]
-                if not same(ws.cell(row, 2).value, clean(p["name"])):
-                    err(case, f"stain {idx+1}: primary name B{row}={ws.cell(row,2).value!r} expected {clean(p['name'])!r}")
-                if not same(ws.cell(row, 4).value, expected_cell(p["cat"])):
-                    err(case, f"stain {idx+1}: Cat# D{row}={ws.cell(row,4).value!r} expected {expected_cell(p['cat'])!r}")
-                if p["dilution"] > 0:
-                    if not same(ws.cell(row, 5).value, p["dilution"]):
-                        err(case, f"stain {idx+1}: dilution E{row}={ws.cell(row,5).value} expected {p['dilution']}")
-                    if not same(wsv.cell(row, 8).value, vol / p["dilution"]):
-                        err(case, f"stain {idx+1}: primary amount H{row}={wsv.cell(row,8).value} expected {vol/p['dilution']}")
-                elif ws.cell(row, 5).value is not None:
-                    err(case, f"stain {idx+1}: dilution E{row} should be empty")
-                if ws.cell(row, 8).value != f"=H{hdr}/E{row}":
-                    err(case, f"stain {idx+1}: primary formula H{row}={ws.cell(row,8).value}")
-            elif ws.cell(row, 2).value is not None:
-                err(case, f"stain {idx+1}: unexpected primary in row {row}")
-            if k < len(s["secondaries"]):
-                q = s["secondaries"][k]
-                if not same(ws.cell(row, 10).value, clean(q["name"])):
-                    err(case, f"stain {idx+1}: secondary name J{row}={ws.cell(row,10).value!r}")
-                if q["dilution"] > 0:
-                    if ws.cell(row, 11).value != f"=K{hdr}/{fmt(q['dilution'])}":
-                        err(case, f"stain {idx+1}: secondary formula K{row}={ws.cell(row,11).value}")
-                    if not same(wsv.cell(row, 11).value, vol / q["dilution"]):
-                        err(case, f"stain {idx+1}: secondary amount K{row}={wsv.cell(row,11).value} expected {vol/q['dilution']}")
-                elif ws.cell(row, 11).value is not None:
-                    err(case, f"stain {idx+1}: K{row} should be empty without a dilution")
-            elif ws.cell(row, 10).value is not None:
-                err(case, f"stain {idx+1}: unexpected secondary in row {row}")
-        r = hdr + rows + 2
+        if fill_of(ws.cell(hdr, 2)) != want_fill:
+            err(case, f"stain {idx+1}: swatch colour {fill_of(ws.cell(hdr, 2))} expected {want_fill}")
+        if col_b(hdr + 1) != "Primary antibody":
+            err(case, f"stain {idx+1}: primary heading missing")
+            continue
+        row = hdr + 2
+        for p in named(s["primaries"]):
+            if not same(ws.cell(row, 2).value, clean(p["name"])):
+                err(case, f"stain {idx+1}: primary name B{row}={ws.cell(row, 2).value!r} expected {clean(p['name'])!r}")
+            if not same(ws.cell(row, 9).value, expected_cell(p["cat"])):
+                err(case, f"stain {idx+1}: Cat# I{row}={ws.cell(row, 9).value!r} expected {expected_cell(p['cat'])!r}")
+            if p["dilution"] > 0:
+                if not same(ws.cell(row, 11).value, p["dilution"]):
+                    err(case, f"stain {idx+1}: dilution K{row}={ws.cell(row, 11).value} expected {p['dilution']}")
+                if ws.cell(row, 13).value != f"=N{hdr}/K{row}":
+                    err(case, f"stain {idx+1}: primary formula M{row}={ws.cell(row, 13).value}")
+                if not same(wsv.cell(row, 13).value, vol / p["dilution"]):
+                    err(case, f"stain {idx+1}: primary amount M{row}={wsv.cell(row, 13).value} expected {vol / p['dilution']}")
+            elif ws.cell(row, 11).value is not None or ws.cell(row, 13).value is not None:
+                err(case, f"stain {idx+1}: primary row {row} has an amount but no dilution")
+            row += 1
+        if col_b(row) != "Secondary / counterstain":
+            err(case, f"stain {idx+1}: secondary heading missing at B{row} ({col_b(row)!r})")
+            continue
+        row += 1
+        for q in named(s["secondaries"]):
+            if not same(ws.cell(row, 2).value, clean(q["name"])):
+                err(case, f"stain {idx+1}: secondary name B{row}={ws.cell(row, 2).value!r}")
+            if q["dilution"] > 0 and math.isfinite(q["dilution"]):
+                if ws.cell(row, 13).value != f"=N{hdr}/K{row}":
+                    err(case, f"stain {idx+1}: secondary formula M{row}={ws.cell(row, 13).value}")
+                if not same(wsv.cell(row, 13).value, vol / q["dilution"]):
+                    err(case, f"stain {idx+1}: secondary amount M{row}={wsv.cell(row, 13).value} expected {vol / q['dilution']}")
+            elif ws.cell(row, 13).value is not None:
+                err(case, f"stain {idx+1}: secondary row {row} has an amount but no dilution")
+            row += 1
 
-    # 4. plate map: colours and labels, well by well
-    for i in range(8):
+    # 4. plate map on the Plan sheet: colours, labels, row labels
+    plate_title = find("PLATE MAP")
+    r0 = find("A", plate_title or 1)
+    if plate_title is None or r0 is None:
+        err(case, "plate map not found")
+    else:
+        for i in range(8):
+            for j in range(12):
+                w = i * 12 + j
+                cell = ws.cell(r0 + i, 3 + j)
+                want = None
+                if wells[w] in ids:
+                    k = ids.index(wells[w])
+                    want = sets[k]["colorHex"].upper() if hex_ok(sets[k].get("colorHex")) else PALETTE[k % len(PALETTE)]
+                if fill_of(cell) != want:
+                    err(case, f"well {'ABCDEFGH'[i]}{j+1}: colour {fill_of(cell)} expected {want}")
+                if not same(cell.value, expected_cell(label(w))):
+                    err(case, f"well {'ABCDEFGH'[i]}{j+1}: label {cell.value!r} expected {expected_cell(label(w))!r}")
+            if not same(ws.cell(r0 + i, 15).value, expected_cell(exp["leftLabels"][i])):
+                err(case, f"row label {i}: {ws.cell(r0 + i, 15).value!r} expected {expected_cell(exp['leftLabels'][i])!r}")
         for j in range(12):
-            w = i * 12 + j
-            cell = ws.cell(6 + i, 14 + j)
-            want = None
-            if wells[w] in ids:
-                k = ids.index(wells[w])
-                want = sets[k]["colorHex"].upper() if hex_ok(sets[k].get("colorHex")) else PALETTE[k % len(PALETTE)]
-            if fill_of(cell) != want:
-                err(case, f"well {'ABCDEFGH'[i]}{j+1}: colour {fill_of(cell)} expected {want}")
-            if not same(cell.value, expected_cell(label(w))):
-                err(case, f"well {'ABCDEFGH'[i]}{j+1}: label {cell.value!r} expected {expected_cell(label(w))!r}")
-        if not same(ws.cell(6 + i, 13).value, expected_cell(exp["leftLabels"][i])):
-            err(case, f"row label {i}: {ws.cell(6+i,13).value!r} expected {expected_cell(exp['leftLabels'][i])!r}")
-    for j in range(12):
-        if not same(ws.cell(4, 14 + j).value, expected_cell(exp["topLabels"][j])):
-            err(case, f"top label {j}: {ws.cell(4,14+j).value!r} expected {expected_cell(exp['topLabels'][j])!r}")
+            if not same(ws.cell(r0 - 2, 3 + j).value, expected_cell(exp["topLabels"][j])):
+                err(case, f"top label {j}: {ws.cell(r0 - 2, 3 + j).value!r} expected {expected_cell(exp['topLabels'][j])!r}")
 
     # 5. blocking buffer and NDS
     total = sum(1 for w in wells if w in ids)
     need = st["blockPerWell"] * total + total_need_sets
     suggested = 0 if need <= 0 else math.ceil((need + st["blockExtraUl"]) / 100 - 1e-9) / 10
     mL = exp["blockingOverride"] if exp.get("blockingOverride") is not None else suggested
-    brow = next((row for row in range(1, ws.max_row + 1) if ws.cell(row, 2).value == "Blocking Buffer (mL)"), None)
+    brow = find("Blocking buffer")
     if brow is None:
-        err(case, "blocking buffer box not found")
+        err(case, "blocking buffer row not found")
     else:
-        if not same(ws.cell(brow + 1, 2).value, mL):
-            err(case, f"blocking buffer B{brow+1}={ws.cell(brow+1,2).value} expected {mL} (need {need} µL)")
-        if ws.cell(brow + 1, 3).value != f"=B{brow+1}*{fmt(st['ndsPerMl'])}":
-            err(case, f"NDS formula {ws.cell(brow+1,3).value}")
-        if not same(wsv.cell(brow + 1, 3).value, mL * st["ndsPerMl"]):
-            err(case, f"NDS C{brow+1}={wsv.cell(brow+1,3).value} expected {mL*st['ndsPerMl']}")
+        if not same(ws.cell(brow, 7).value, mL):
+            err(case, f"blocking buffer G{brow}={ws.cell(brow, 7).value} expected {mL} (need {need} µL)")
+        if ws.cell(brow, 13).value != f"=G{brow}*{fmt(st['ndsPerMl'])}":
+            err(case, f"NDS formula {ws.cell(brow, 13).value}")
+        if not same(wsv.cell(brow, 13).value, mL * st["ndsPerMl"]):
+            err(case, f"NDS M{brow}={wsv.cell(brow, 13).value} expected {mL * st['ndsPerMl']}")
 
-    # 6. Day 0 dates
+    # 6. samples: Day 0, fixed date and Day for each
     def title(s):
         return " ".join(x for x in (s["code"].strip(" "), s["name"].strip(" ")) if x)
+
     def fixed_date(s):
         """Date fixed: picked by hand, else Day 0 + the fixation day; none without a Day 0."""
         if not s["hasDay0"]:
@@ -239,41 +260,20 @@ def check(case, xlsx, state):
         f = fixed_date(s)
         return str((f - local_date(s["day0"])).days) if f is not None else ""
 
-    dated = [s for s in exp["samples"] if title(s) or s["hasDay0"] or day_text(s)]
-
-    def key(s):
-        return (s["hasDay0"], day_text(s), local_date(s["day0"]) if s["hasDay0"] else None, fixed_date(s))
-
-    def dates_in(col):
-        return [c.value.date() for row in ws.iter_rows(min_row=21, min_col=col, max_col=col) for c in row
-                if isinstance(c.value, datetime.datetime)]
-
-    if not dated or len(dated) == 1 or all(key(s) == key(dated[0]) for s in dated):
-        first = dated[0] if dated else None
-        r0 = next((row for row in range(21, ws.max_row + 1) if ws.cell(row, 2).value == "Day 0 ="), None)
-        if r0 is None or ws.cell(r0 + 1, 2).value != "Day" or ws.cell(r0 + 2, 2).value != "Date fixed =":
-            err(case, "Day 0 / Day / Date fixed rows not found")
-        else:
-            want0 = local_date(first["day0"]) if first and first["hasDay0"] else None
-            got0 = ws.cell(r0, 3).value.date() if isinstance(ws.cell(r0, 3).value, datetime.datetime) else None
-            if got0 != want0:
-                err(case, f"Day 0 {got0} expected {want0}")
-            if not same(ws.cell(r0 + 1, 3).value, expected_cell(day_text(first) if first else "")):
-                err(case, f"Day {ws.cell(r0+1,3).value!r} expected {day_text(first) if first else ''!r}")
-            wantf = fixed_date(first) if first else None
-            gotf = ws.cell(r0 + 2, 3).value.date() if isinstance(ws.cell(r0 + 2, 3).value, datetime.datetime) else None
-            if gotf != wantf:
-                err(case, f"Date fixed {gotf} expected {wantf}")
+    listed = [s for s in exp["samples"] if title(s) or s["hasDay0"]]
+    head = find("Code")
+    if head is None:
+        err(case, "samples table not found")
     else:
-        if dates_in(3) != [local_date(s["day0"]) for s in dated if s["hasDay0"]]:
-            err(case, f"Day 0 dates {dates_in(3)} differ")
-        if dates_in(7) != [fixed_date(s) for s in dated if fixed_date(s) is not None]:
-            err(case, f"Date fixed values {dates_in(7)} differ")
-        rows = [row for row in range(21, ws.max_row + 1) if ws.cell(row, 4).value == "Day"]
-        got_days = [ws.cell(row, 5).value for row in rows]
-        want_days = [expected_cell(day_text(s)) for s in dated]
-        if len(got_days) != len(want_days) or not all(same(x, y) for x, y in zip(got_days, want_days)):
-            err(case, f"Day values {got_days} expected {want_days}")
+        for k, smp in enumerate(listed):
+            row = head + 1 + k
+            want0 = local_date(smp["day0"]) if smp["hasDay0"] else None
+            if as_date(ws.cell(row, 9).value) != want0:
+                err(case, f"sample {k+1}: Day 0 {ws.cell(row, 9).value} expected {want0}")
+            if as_date(ws.cell(row, 11).value) != fixed_date(smp):
+                err(case, f"sample {k+1}: fixed {ws.cell(row, 11).value} expected {fixed_date(smp)}")
+            if not same(ws.cell(row, 13).value, expected_cell(day_text(smp))):
+                err(case, f"sample {k+1}: Day {ws.cell(row, 13).value!r} expected {day_text(smp)!r}")
 
     # 7. observation sheet lists exactly the stained wells, set by set
     ob = wb["Observation"]
@@ -285,15 +285,22 @@ def check(case, xlsx, state):
     if got != want:
         err(case, f"observation wells differ: {len(got)} rows, expected {len(want)}")
 
-    # 8. plate layout sheet colours
-    pl = wb["Plate layout"]
+    # 8. the plate map sheet's colours
+    pl = wb["Plate map"]
     for w in range(96):
         want = None
         if wells[w] in ids:
             k = ids.index(wells[w])
             want = sets[k]["colorHex"].upper() if hex_ok(sets[k].get("colorHex")) else PALETTE[k % len(PALETTE)]
-        if fill_of(pl.cell(4 + w // 12, 3 + w % 12)) != want:
-            err(case, f"plate layout sheet well {w}: colour differs")
+        if fill_of(pl.cell(6 + w // 12, 3 + w % 12)) != want:
+            err(case, f"plate map sheet well {w}: colour differs")
+
+    # 9. it prints: A4, fit to the page width, page header and footer on every sheet
+    with zipfile.ZipFile(xlsx) as z:
+        for name in [n for n in z.namelist() if n.startswith("xl/worksheets/sheet")]:
+            raw = z.read(name).decode("utf8")
+            if 'paperSize="9"' not in raw or 'fitToWidth="1"' not in raw or "<oddFooter>" not in raw:
+                err(case, f"{name}: print setup missing")
 
 
 def main():

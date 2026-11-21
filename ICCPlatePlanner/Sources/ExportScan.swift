@@ -7,8 +7,8 @@ import QuartzCore
 // After the workbook is saved, a window shows the plate on a microscope stage: the objective snakes
 // across the stained wells, each one lights up in its dyes as it is acquired, and a scope beside it
 // plays the confocal scan for the stain under the lens (laser line, channel by channel, then the merge).
-// When the last well is done the window says where the file is, with Open in Excel and Show in Finder;
-// with "Open in Excel after saving" on, Excel opens then rather than over the top of the animation.
+// When the last well is done the window says where the file is, and the user picks Open in Excel, Show in
+// Finder or Done: nothing opens on its own.
 // Everything is drawn once; the shared 20-frames-a-second clock only moves and fades the pictures.
 
 struct ScanWell {
@@ -32,7 +32,6 @@ final class ExportScanController: NSObject, NSWindowDelegate {
     private var scan: ExportScanView?
     private var run: ExportRun?
     private var finished: (() -> Void)?
-    private var autoOpen = false
     private var keyMonitor: Any?
 
     /// Shows the scan for `store`'s plate; `finished` runs once (the confetti), when the scan ends.
@@ -56,7 +55,6 @@ final class ExportScanController: NSObject, NSWindowDelegate {
         let r = ExportRun(url: url, total: wells.count)
         run = r
         self.finished = finished
-        autoOpen = store.openAfterExport
         let size = NSSize(width: 860, height: 520)
         let parent = NSApp.mainWindow ?? NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible }
         let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .fullSizeContentView],
@@ -110,12 +108,6 @@ final class ExportScanController: NSObject, NSWindowDelegate {
         guard let r = run, !r.done else { return }
         r.done = true
         finished?(); finished = nil
-        if autoOpen {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-                guard let self, self.run === r, self.window != nil else { return }
-                self.openFile()
-            }
-        }
     }
 
     private func openFile() {
@@ -444,8 +436,8 @@ final class ExportScanView: AmbientLayerView {
 
     func start() {
         clock = 0
-        ambientActive = motion
-        if !motion { skip() }
+        ambientActive = motion && !wells.isEmpty
+        if !motion || wells.isEmpty { skip() }
     }
 
     func stop() {

@@ -15,8 +15,25 @@ import QuartzCore
 final class FxCenter {
     static let shared = FxCenter()
     weak var view: FxView?
-    var gridFrame: CGRect = .zero
-    var cardFrames: [UUID: CGRect] = [:]
+    /// Invisible marker views on the plate's grid and on each stain card. Where they are is asked only when
+    /// an effect plays: tracking it continuously (SwiftUI preferences) re-ran the view graph on every frame
+    /// of scrolling and made the card list lag.
+    weak var gridAnchor: NSView?
+    var cardAnchors: [UUID: Weak] = [:]
+    final class Weak { weak var view: NSView?; init(_ v: NSView) { view = v } }
+
+    /// `v`'s frame in the effects layer's (top-down) coordinates.
+    private func rect(of v: NSView?) -> CGRect {
+        guard let v, let fx = view, v.window != nil, v.window === fx.window else { return .zero }
+        let r = fx.convert(v.bounds, from: v)
+        return CGRect(x: r.minX, y: fx.bounds.height - r.maxY, width: r.width, height: r.height)
+    }
+    var gridFrame: CGRect { rect(of: gridAnchor) }
+    var cardFrames: [UUID: CGRect] {
+        var out: [UUID: CGRect] = [:]
+        for (id, w) in cardAnchors { let r = rect(of: w.view); if r != .zero { out[id] = r } }
+        return out
+    }
     var cw: CGFloat = 48, ch: CGFloat = 44
     var on = true
 
@@ -26,27 +43,32 @@ final class FxCenter {
     var usable: Bool { on && view != nil && gridFrame.width > 0 }
 }
 
-struct GridFrameKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { let n = nextValue(); if n != .zero { value = n } }
-}
-
-struct CardFramesKey: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) { value.merge(nextValue()) { $1 } }
-}
-
 let fxSpace = "fxroot"
 
+/// An invisible view that marks where the plate's grid or a stain card is.
+struct FxAnchor: NSViewRepresentable {
+    enum Kind { case grid, card(UUID) }
+    let kind: Kind
+    func makeNSView(context: Context) -> NSView {
+        let v = AnchorView(frame: .zero)
+        register(v)
+        return v
+    }
+    func updateNSView(_ v: NSView, context: Context) { register(v) }
+    private func register(_ v: NSView) {
+        switch kind {
+        case .grid: FxCenter.shared.gridAnchor = v
+        case .card(let id): FxCenter.shared.cardAnchors[id] = FxCenter.Weak(v)
+        }
+    }
+    final class AnchorView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+}
+
 extension View {
-    /// Records this view's place as the plate's grid.
-    func fxGrid() -> some View {
-        background(GeometryReader { g in Color.clear.preference(key: GridFrameKey.self, value: g.frame(in: .named(fxSpace))) })
-    }
-    /// Records this view's place as stain `id`'s card.
-    func fxCard(_ id: UUID) -> some View {
-        background(GeometryReader { g in Color.clear.preference(key: CardFramesKey.self, value: [id: g.frame(in: .named(fxSpace))]) })
-    }
+    /// Marks this view as the plate's grid.
+    func fxGrid() -> some View { background(FxAnchor(kind: .grid)) }
+    /// Marks this view as stain `id`'s card.
+    func fxCard(_ id: UUID) -> some View { background(FxAnchor(kind: .card(id))) }
 }
 
 struct FxOverlay: NSViewRepresentable {
