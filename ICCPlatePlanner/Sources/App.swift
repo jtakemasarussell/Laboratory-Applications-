@@ -46,6 +46,28 @@ enum Main {
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
         if a.contains("--pair-qc") { pairQC(); return }
+        if let i = a.firstIndex(of: "--theme-shot"), a.count > i + 1 {
+            // the real window: start in the light, switch to the microscope room while it runs, and back
+            let app = NSApplication.shared
+            app.setActivationPolicy(.accessory)
+            let store = Store(inMemory: sampleExperiment())
+            if let j = a.firstIndex(of: "--plate"), a.count > j + 1, let d = try? Data(contentsOf: URL(fileURLWithPath: a[j + 1])), let e = try? decodePlate(d) { store.exp = e }
+            store.darkRoom = false
+            let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: 1360, height: 900))
+            let win = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1360, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+            win.contentView = host
+            win.orderFrontRegardless()
+            func shot(_ name: String) {
+                guard let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win.windowNumber), [.boundsIgnoreFraming, .bestResolution]) else { return }
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: a[i + 1] + name + ".png"))
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(1.5)); shot("light")
+            store.darkRoom = true
+            RunLoop.main.run(until: Date().addingTimeInterval(1.2)); shot("dark")
+            store.darkRoom = false
+            RunLoop.main.run(until: Date().addingTimeInterval(1.2)); shot("back")
+            return
+        }
         if a.contains("--sound-test") { _ = NSApplication.shared; Sounds.selfTest(); return }
         if let i = a.firstIndex(of: "--export-scan-snapshot"), a.count > i + 2, let t = Double(a[i + 2]) {
             exportScanSnapshot(a[i + 1], at: t, plate: a.firstIndex(of: "--plate").flatMap { a.count > $0 + 1 ? a[$0 + 1] : nil })
@@ -109,6 +131,7 @@ enum Main {
             g.issues.forEach { print("  !", $0) }
             return
         }
+        Sounds.prewarm()
         launchObserver = NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification, object: nil, queue: .main) { _ in
             SplashController.shared.showAtLaunch()
         }
@@ -274,7 +297,7 @@ final class Store: ObservableObject {
     }
     /// Soft sounds: a pipette click, the confocal hum, a chime (File menu).
     @Published var sounds: Bool = Sounds.on {
-        didSet { Sounds.on = sounds; if persist { UserDefaults.standard.set(sounds, forKey: "sounds") } }
+        didSet { Sounds.on = sounds; Sounds.prewarm(); if persist { UserDefaults.standard.set(sounds, forKey: "sounds") } }
     }
     /// The confocal hologram over the selected stain's well (File menu).
     @Published var showHologram: Bool = UserDefaults.standard.object(forKey: "showHologram") as? Bool ?? true {
@@ -842,13 +865,10 @@ func snapshot(_ path: String) {
     var size = NSSize(width: 1320, height: 860)
     if let i = a.firstIndex(of: "--size"), a.count > i + 2, let w = Double(a[i + 1]), let h = Double(a[i + 2]) { size = NSSize(width: w, height: h) }
     if a.contains("--dark") { store.darkRoom = true }
-    if let i = a.firstIndex(of: "--freezer"), a.count > i + 1 {
-        // the freezer box on its own (a popover does not show in a snapshot)
-        let tubes = store.library.primaries.enumerated().map { k, p in
-            FreezerTube(id: p.id, label: markerName(p.name), sub: host(ofPrimary: p) ?? p.cat,
-                        capHex: hostCapHex[host(ofPrimary: p) ?? ""] ?? "9AA6B6", frost: [0, 0.1, 0.3, 0.6, 0.9, 1][k % 6])
-        }
-        let fb = NSHostingView(rootView: FreezerBox(tubes: tubes, title: "Primary antibodies · −20 °C", legend: true, motion: false) { _ in }.fixedSize())
+    if let i = a.firstIndex(of: "--fridge"), a.count > i + 1 {
+        // the fridge on its own (a popover does not show in a snapshot)
+        let fb = NSHostingView(rootView: FridgeRack(secondaries: a.contains("--secondary"), setID: store.exp.sets.first?.id ?? UUID(), motion: false) {}
+            .environmentObject(store).fixedSize())
         let fw = NSWindow(contentRect: NSRect(origin: .zero, size: fb.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
         fw.contentView = fb
         fb.layoutSubtreeIfNeeded()
@@ -884,6 +904,7 @@ func snapshot(_ path: String) {
 /// clock, and main-thread stalls (frames the screen would wait for).
 func lagCheck(_ platePath: String) {
     let a = CommandLine.arguments
+    Sounds.prewarm()
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let store = Store(inMemory: sampleExperiment())

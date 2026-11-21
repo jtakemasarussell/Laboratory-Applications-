@@ -101,7 +101,10 @@ final class ExportScanController: NSObject, NSWindowDelegate {
             if e.keyCode == 36, self.run?.done == true { self.openFile(); return nil }   // Return
             return e
         }
-        if store.motion && !wells.isEmpty { Sounds.scanning(true) }
+        // the hum starts a moment after the window, so the two do not land on the same frame
+        if store.motion && !wells.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in if self?.run?.done == false { Sounds.scanning(true) } }
+        }
         v.start()
     }
 

@@ -1,13 +1,16 @@
 import SwiftUI
 import AppKit
+import AudioToolbox
+import AVFoundation
 
 // MARK: - The freezer box, the sample timeline, the microscope room and the sounds
 
-// MARK: Freezer box (the antibody library)
+// MARK: The 4 °C fridge (the antibody library)
 //
-// The library as a −20 °C freezer box: a tube for each saved antibody, its cap coloured by the host it was
-// raised in (primaries) or by its dye (secondaries). Tubes used lately sit at the front; ones not touched
-// for weeks are frosted over. Click a tube and it lifts out and goes onto the stain card.
+// The one place antibodies come from: the library as a fridge rack of tubes, the cap coloured by the host
+// a primary was raised in or a secondary's dye. Tubes used lately sit at the front; ones not touched for
+// weeks look faded. Click a tube to put it on the stain card; add a new tube with its company, catalogue
+// number and dilution; right-click a tube to take it out of the fridge; or start an empty row.
 
 /// When each antibody (by name) was last taken out, kept beside the library so the plate format is unchanged.
 enum FreezerLog {
@@ -22,7 +25,7 @@ enum FreezerLog {
         UserDefaults.standard.set(d, forKey: key)
     }
     /// 0 = used today … 1 = untouched for a month or more (or never).
-    static func frost(_ name: String) -> Double {
+    static func age(_ name: String) -> Double {
         guard let d = lastUsed(name) else { return 0.85 }
         return min(1, max(0, Date().timeIntervalSince(d) / (30 * 86400)))
     }
@@ -33,89 +36,147 @@ let hostCapHex: [String: String] = [
     "chicken": "E07A2D", "guinea pig": "B5651D", "human": "6B7A90", "donkey": "8C8C8C",
 ]
 
-struct FreezerTube: Identifiable {
+struct FridgeTube: Identifiable {
     let id: UUID
-    let label: String
-    let sub: String
+    let label: String       // what the tube says: the marker, or the secondary's short name
+    let detail: String      // company · Cat#
+    let dilution: String    // "1:500"
     let capHex: String
-    let frost: Double
+    let age: Double
+    let help: String
 }
 
-/// The snowflake button that opens the box.
-struct FreezerButton: View {
+/// The fridge button on a stain card: opens the rack for primaries or for secondaries.
+struct FridgeButton: View {
     @EnvironmentObject var store: Store
     let secondaries: Bool
-    let add: (UUID) -> Void
+    let setID: UUID
     private let open = State(initialValue: false)
 
     var body: some View {
         Button { open.wrappedValue.toggle() } label: {
-            Label("Freezer", systemImage: "snowflake").font(.system(size: 12, weight: .semibold))
+            Label(secondaries ? "4 °C fridge · secondary / counterstain" : "4 °C fridge · primary antibody", systemImage: "refrigerator")
+                .font(.system(size: 12, weight: .semibold))
         }
         .buttonStyle(.borderless)
-        .foregroundColor(Brand.mid)
-        .help("Pick from the antibody freezer box")
+        .foregroundColor(Brand.navy)
+        .help(secondaries ? "Take a secondary or counterstain from the fridge, or add a new tube" : "Take a primary antibody from the fridge, or add a new tube")
         .popover(isPresented: open.projectedValue, arrowEdge: .bottom) {
-            FreezerBox(tubes: tubes, title: secondaries ? "Secondaries · −20 °C" : "Primary antibodies · −20 °C", legend: !secondaries,
-                       motion: store.motion) { id in
-                add(id)
-                DispatchQueue.main.asyncAfter(deadline: .now() + (store.motion ? 0.35 : 0)) { open.wrappedValue = false }
+            FridgeRack(secondaries: secondaries, setID: setID, motion: store.motion) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + (store.motion ? 0.3 : 0)) { open.wrappedValue = false }
             }
+            .environmentObject(store)
         }
     }
+}
 
-    private var tubes: [FreezerTube] {
-        let list: [FreezerTube]
+struct FridgeRack: View {
+    @EnvironmentObject var store: Store
+    let secondaries: Bool
+    let setID: UUID
+    let motion: Bool
+    let close: () -> Void
+    private let lifted = State(initialValue: UUID?.none)
+    private let showForm = State(initialValue: false)
+    // the new tube's fields
+    private let fName = State(initialValue: ""), fCompany = State(initialValue: ""), fCat = State(initialValue: "")
+    private let fDilution = State(initialValue: ""), fRRID = State(initialValue: ""), fProduct = State(initialValue: "")
+
+    private var tubes: [FridgeTube] {
+        let list: [FridgeTube]
         if secondaries {
             list = store.library.secondaries.map { q in
-                FreezerTube(id: q.id, label: q.name, sub: q.dilution > 0 ? "1:\(fmtNum(q.dilution))" : "",
-                            capHex: secondaryFluor(q)?.hex ?? "9AA6B6", frost: FreezerLog.frost(q.name))
+                let detail = [q.company ?? "", q.cat ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+                return FridgeTube(id: q.id, label: q.name, detail: detail, dilution: q.dilution > 0 ? "1:\(fmtNum(q.dilution))" : "1:?",
+                                  capHex: secondaryFluor(q)?.hex ?? "9AA6B6", age: FreezerLog.age(q.name),
+                                  help: [q.name, q.detail ?? "", detail].filter { !$0.isEmpty }.joined(separator: "\n"))
             }
         } else {
             list = store.library.primaries.map { p in
                 let host = host(ofPrimary: p) ?? ""
-                return FreezerTube(id: p.id, label: markerName(p.name), sub: host.isEmpty ? p.cat : host,
-                                   capHex: hostCapHex[host] ?? "9AA6B6", frost: FreezerLog.frost(p.name))
+                let detail = [p.company, p.cat].filter { !$0.isEmpty }.joined(separator: " · ")
+                return FridgeTube(id: p.id, label: markerName(p.name), detail: detail, dilution: p.dilution > 0 ? "1:\(fmtNum(p.dilution))" : "1:?",
+                                  capHex: hostCapHex[host] ?? "9AA6B6", age: FreezerLog.age(p.name),
+                                  help: [p.name, detail, p.rrid.map { "RRID " + $0 } ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
             }
         }
-        // the ones used lately at the front
-        return list.sorted { $0.frost < $1.frost }
+        return list.sorted { $0.age < $1.age }     // the ones used lately at the front
     }
-}
 
-struct FreezerBox: View {
-    let tubes: [FreezerTube]
-    let title: String
-    let legend: Bool
-    let motion: Bool
-    let pick: (UUID) -> Void
-    private let lifted = State(initialValue: UUID?.none)
-    private let hover = State(initialValue: UUID?.none)
+    private var cardIndex: Int? { store.exp.sets.firstIndex { $0.id == setID } }
+
+    private func take(_ id: UUID) {
+        guard let k = cardIndex else { return }
+        if secondaries, let q = store.library.secondaries.first(where: { $0.id == id }) {
+            var n = q; n.id = UUID(); store.exp.sets[k].secondaries.append(n); FreezerLog.touch([q.name])
+        } else if let p = store.library.primaries.first(where: { $0.id == id }) {
+            var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n); FreezerLog.touch([p.name])
+        }
+        if motion { withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { lifted.wrappedValue = id } }
+        close()
+    }
+
+    private func remove(_ id: UUID) {
+        if secondaries { store.library.secondaries.removeAll { $0.id == id } } else { store.library.primaries.removeAll { $0.id == id } }
+    }
+
+    private func emptyRow() {
+        guard let k = cardIndex else { return }
+        if secondaries { store.exp.sets[k].secondaries.append(Secondary()) } else { store.exp.sets[k].primaries.append(Antibody()) }
+        close()
+    }
+
+    /// Puts the new tube in the fridge (and on the card).
+    private func addNew(toCard: Bool) {
+        let name = fName.wrappedValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let dil = Double(fDilution.wrappedValue.replacingOccurrences(of: "1:", with: "").trimmingCharacters(in: .whitespaces)) ?? 0
+        func opt(_ s: String) -> String? { let t = s.trimmingCharacters(in: .whitespaces); return t.isEmpty ? nil : t }
+        if secondaries {
+            let q = Secondary(name: name, dilution: dil, detail: opt(fProduct.wrappedValue), company: opt(fCompany.wrappedValue),
+                              cat: opt(fCat.wrappedValue), rrid: opt(fRRID.wrappedValue))
+            store.library.secondaries.removeAll { $0.name == name }
+            store.library.secondaries.append(q)
+            if toCard, let k = cardIndex { var n = q; n.id = UUID(); store.exp.sets[k].secondaries.append(n) }
+        } else {
+            let p = Antibody(name: name, company: fCompany.wrappedValue.trimmingCharacters(in: .whitespaces),
+                             cat: fCat.wrappedValue.trimmingCharacters(in: .whitespaces), dilution: dil, rrid: opt(fRRID.wrappedValue))
+            store.library.primaries.removeAll { $0.name == name }
+            store.library.primaries.append(p)
+            if toCard, let k = cardIndex { var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n) }
+        }
+        FreezerLog.touch([name])
+        for f in [fName, fCompany, fCat, fDilution, fRRID, fProduct] { f.wrappedValue = "" }
+        showForm.wrappedValue = false
+        if toCard { close() }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: "snowflake").foregroundColor(Color(hex: "9BD2FF"))
-                Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.white)
+                Image(systemName: "refrigerator").foregroundColor(Color(hex: "9BD2FF"))
+                Text(secondaries ? "Secondaries & counterstains · 4 °C" : "Primary antibodies · 4 °C").font(.system(size: 12, weight: .bold)).foregroundColor(.white)
                 Spacer()
-                Text("\(tubes.count) tubes").font(.system(size: 11)).foregroundColor(Color(hex: "9FB7D6"))
+                Text("\(tubes.count) tube\(tubes.count == 1 ? "" : "s")").font(.system(size: 11)).foregroundColor(Color(hex: "9FB7D6"))
             }
             if tubes.isEmpty {
-                Text("The box is empty: antibodies are added here when you export a plan.")
-                    .font(.system(size: 11)).foregroundColor(Color(hex: "9FB7D6")).frame(width: 330, alignment: .leading)
+                Text("The fridge is empty: add a tube below.").font(.system(size: 11)).foregroundColor(Color(hex: "9FB7D6"))
+                    .frame(width: 400, alignment: .leading)
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(58), spacing: 6), count: 6), spacing: 8) {
-                    ForEach(tubes) { t in tube(t) }
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(64), spacing: 6), count: 6), spacing: 8) {
+                        ForEach(tubes) { t in tube(t) }
+                    }
+                    .padding(10)
                 }
-                .padding(10)
+                .frame(width: 430, height: min(330, CGFloat((tubes.count + 5) / 6) * 104 + 20))
                 .background(
-                    // the cardboard grid of the box, frosted at the edges
-                    RoundedRectangle(cornerRadius: 8).fill(Color(hex: "1B2A3E"))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(
-                            LinearGradient(colors: [Color.white.opacity(0.55), Color(hex: "BFE3FF").opacity(0.2)], startPoint: .top, endPoint: .bottom), lineWidth: 2))
+                    // the fridge shelf, lit from above
+                    RoundedRectangle(cornerRadius: 8).fill(LinearGradient(colors: [Color(hex: "22364F"), Color(hex: "17263A")], startPoint: .top, endPoint: .bottom))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
                 )
             }
-            if legend {
+            if !secondaries {
                 HStack(spacing: 10) {
                     ForEach(["rabbit", "goat", "mouse", "rat", "sheep"], id: \.self) { h in
                         HStack(spacing: 4) {
@@ -125,56 +186,112 @@ struct FreezerBox: View {
                     }
                 }
             }
-            Text("Front: used lately · frosted: untouched for weeks").font(.system(size: 10)).foregroundColor(Color(hex: "6F87A8"))
+            Text("Click a tube to add it · right-click to take it out of the fridge · grey and faint: not used for weeks")
+                .font(.system(size: 10)).foregroundColor(Color(hex: "6F87A8"))
+            Divider().overlay(Color.white.opacity(0.15))
+            if showForm.wrappedValue { form } else {
+                HStack(spacing: 12) {
+                    Button { showForm.wrappedValue = true } label: { Label("New tube…", systemImage: "plus.circle.fill") }
+                    Button { emptyRow() } label: { Label("Empty row on the card", systemImage: "text.badge.plus") }
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(Color(hex: "BFE3FF"))
+                .font(.system(size: 12, weight: .semibold))
+            }
         }
         .padding(14)
+        .frame(width: 458)
         .background(LinearGradient(colors: [Color(hex: "0E1B2C"), Color(hex: "142740")], startPoint: .top, endPoint: .bottom))
     }
 
-    private func tube(_ t: FreezerTube) -> some View {
+    /// A new tube: its name and what the lab records about it.
+    private var form: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("New tube").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+            field(secondaries ? "Name, e.g. 488 rab" : "Name with host, e.g. LMX1A/B (rab)", fName)
+            if secondaries {
+                HStack { field("Dilution, e.g. 500", fDilution); field("Cat#", fCat) }
+                field("Product, e.g. Donkey anti-Rabbit IgG, Alexa Fluor 488", fProduct)
+                HStack { field("Company", fCompany); field("RRID", fRRID) }
+            } else {
+                HStack { field("Company", fCompany); field("Cat#", fCat) }
+                HStack { field("Dilution, e.g. 1000", fDilution); field("RRID", fRRID) }
+            }
+            HStack {
+                Button("Cancel") { showForm.wrappedValue = false }
+                Spacer()
+                Button("Put in the fridge") { addNew(toCard: false) }
+                Button("Add to fridge and card") { addNew(toCard: true) }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .disabled(false)
+            .padding(.top, 2)
+        }
+        .textFieldStyle(.roundedBorder)
+    }
+
+    private func field(_ hint: String, _ v: State<String>) -> some View {
+        TextField(hint, text: v.projectedValue).font(.system(size: 12))
+    }
+
+    private func tube(_ t: FridgeTube) -> some View {
         let up = lifted.wrappedValue == t.id
-        let over = hover.wrappedValue == t.id
-        return Button {
-            if motion { withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { lifted.wrappedValue = t.id } }
-            pick(t.id)
-        } label: {
-            VStack(spacing: 3) {
-                ZStack(alignment: .top) {
-                    // the tube: frosted plastic with a little liquid, and its coloured cap
-                    VStack(spacing: 0) {
-                        RoundedRectangle(cornerRadius: 3).fill(Color(hex: t.capHex)).frame(width: 26, height: 10)
-                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.25), lineWidth: 0.5))
-                        TubeShape()
-                            .fill(LinearGradient(colors: [Color.white.opacity(0.85), Color(hex: "DDE8F3").opacity(0.7)], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: 22, height: 34)
-                            .overlay(alignment: .bottom) {
-                                TubeShape()
-                                    .fill(Color(hex: t.capHex).opacity(0.35)).frame(width: 20, height: 11).padding(.bottom, 1)
-                            }
-                    }
-                    // frost on tubes left alone
-                    if t.frost > 0.15 {
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(Color.white.opacity(0.55 * t.frost))
-                            .overlay(Image(systemName: "snowflake").font(.system(size: 9)).foregroundColor(.white.opacity(t.frost)))
-                            .frame(width: 30, height: 46)
-                            .blendMode(.screen)
-                    }
+        // the longer a tube has sat unused, the greyer and fainter it gets: a month or more is a ghost
+        let fade = max(0, min(1, (t.age - 0.15) / 0.7))
+        return Button { take(t.id) } label: {
+            VStack(spacing: 2) {
+                VStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 3).fill(Color(hex: t.capHex)).frame(width: 26, height: 10)
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.25), lineWidth: 0.5))
+                    TubeShape()
+                        .fill(LinearGradient(colors: [Color.white.opacity(0.9), Color(hex: "DDE8F3").opacity(0.75)], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: 22, height: 32)
+                        .overlay(alignment: .bottom) {
+                            TubeShape().fill(Color(hex: t.capHex).opacity(0.35)).frame(width: 20, height: 11).padding(.bottom, 1)
+                        }
                 }
                 Text(t.label).font(.system(size: 9.5, weight: .bold)).foregroundColor(.white).lineLimit(1).minimumScaleFactor(0.7)
-                Text(t.sub).font(.system(size: 8.5)).foregroundColor(Color(hex: "9FB7D6")).lineLimit(1).minimumScaleFactor(0.7)
+                Text(t.dilution).font(.system(size: 8.5, weight: .semibold).monospacedDigit()).foregroundColor(Color(hex: "BFE3FF"))
+                Text(t.detail.isEmpty ? " " : t.detail).font(.system(size: 7.5)).foregroundColor(Color(hex: "8FA7C6")).lineLimit(2)
+                    .multilineTextAlignment(.center).minimumScaleFactor(0.7)
             }
-            .frame(width: 58, height: 82)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(over ? 0.10 : 0.03)))
-            .offset(y: up ? -18 : (over ? -3 : 0))
-            .opacity(up ? 0 : 1)
+            .frame(width: 64, height: 96)
+            .saturation(1 - fade)
+            .opacity(up ? 0 : 1 - 0.68 * fade)
+            .overlay(alignment: .topTrailing) {
+                if fade > 0.5 {
+                    Text("unused").font(.system(size: 7, weight: .heavy)).tracking(0.3)
+                        .foregroundColor(Color(hex: "0E1B2C"))
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .background(Capsule().fill(Color(hex: "9FB7D6")))
+                        .offset(x: -2, y: 2)
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+            .offset(y: up ? -18 : 0)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { inside in
-            if motion { withAnimation(.easeOut(duration: 0.15)) { hover.wrappedValue = inside ? t.id : (over ? nil : hover.wrappedValue) } }
+        .help(t.help)
+        .contextMenu {
+            Button("Add to the card") { take(t.id) }
+            Divider()
+            Button("Take out of the fridge", role: .destructive) { remove(t.id) }
         }
-        .help(t.label)
+    }
+}
+
+/// A tube's body: straight sides and a round bottom (works on macOS 13).
+struct TubeShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let rad = r.width / 2
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - rad))
+        p.addArc(center: CGPoint(x: r.midX, y: r.maxY - rad), radius: rad, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+        p.closeSubpath()
+        return p
     }
 }
 
@@ -260,31 +377,64 @@ struct RoomGlow: NSViewRepresentable {
 }
 
 final class RoomGlowView: NSView {
-    private var key = ""
+    /// One small glow layer per stained well, the picture shared by every well of a colour: painting
+    /// adds or removes a layer instead of redrawing the whole plate's glow.
+    private var glows: [Int: (CALayer, String)] = [:]
+    private var cw: CGFloat = 48, ch: CGFloat = 44
+    private static var images: [String: CGImage?] = [:]
     override init(frame: NSRect) {
         super.init(frame: frame)
         layer = CALayer()
         wantsLayer = true
+        layer?.isGeometryFlipped = false
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    func show(_ wells: [(Int, String)], cw: CGFloat, ch: CGFloat) {
-        let k = wells.map { "\($0.0)\($0.1)" }.joined() + "\(Int(cw))"
-        guard k != key else { return }
-        key = k
-        let size = CGSize(width: cw * 12 + 16, height: ch * 8 + 16)
-        let img = renderImage(size, screenScale) { c in
+
+    private static func glow(_ hex: String, _ size: CGSize) -> CGImage? {
+        let key = hex + "\(Int(size.width))"
+        if let i = images[key] { return i }
+        let i = renderImage(size, screenScale) { c in
             let space = CGColorSpace(name: CGColorSpace.sRGB)!
-            for (w, hex) in wells {
-                let ctr = CGPoint(x: 8 + (CGFloat(w % 12) + 0.5) * cw, y: 8 + (CGFloat(w / 12) + 0.5) * ch)
-                if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0.7), cg(hex, 0)] as CFArray, locations: [0, 1]) {
-                    c.drawRadialGradient(g, startCenter: ctr, startRadius: 0, endCenter: ctr, endRadius: cw * 0.85, options: [])
-                }
+            let ctr = CGPoint(x: size.width / 2, y: size.height / 2)
+            if let g = CGGradient(colorsSpace: space, colors: [cg(hex, 0.7), cg(hex, 0)] as CFArray, locations: [0, 1]) {
+                c.drawRadialGradient(g, startCenter: ctr, startRadius: 0, endCenter: ctr, endRadius: size.width / 2, options: [])
             }
         }
+        images[key] = i
+        return i
+    }
+
+    func show(_ wells: [(Int, String)], cw: CGFloat, ch: CGFloat) {
+        let want = Dictionary(wells.map { ($0.0, $0.1) }, uniquingKeysWith: { a, _ in a })
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        layer?.contents = img
-        layer?.contentsGravity = .resize
+        defer { CATransaction.commit() }
+        for (w, (l, hex)) in glows where want[w] != hex { l.removeFromSuperlayer(); glows[w] = nil }
+        self.cw = cw; self.ch = ch
+        let size = CGSize(width: cw * 1.7, height: cw * 1.7)
+        for (w, hex) in want where glows[w] == nil {
+            let l = CALayer()
+            l.contents = Self.glow(hex, size)
+            layer?.addSublayer(l)
+            glows[w] = (l, hex)
+        }
+        place()
+    }
+
+    /// The view is 8 pt larger than the grid on every side; layer coordinates run upwards.
+    private func place() {
+        let size = CGSize(width: cw * 1.7, height: cw * 1.7)
+        let H = bounds.height
+        for (w, (l, _)) in glows {
+            let cx = 8 + (CGFloat(w % 12) + 0.5) * cw, cy = 8 + (CGFloat(w / 12) + 0.5) * ch
+            l.frame = CGRect(x: cx - size.width / 2, y: H - cy - size.height / 2, width: size.width, height: size.height)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        place()
         CATransaction.commit()
     }
 }
@@ -296,47 +446,83 @@ final class RoomGlowView: NSView {
 enum Sounds {
     static var on = UserDefaults.standard.bool(forKey: "sounds")
     private static var lastClick = Date.distantPast
-    private static let click: NSSound? = make(seconds: 0.05) { t in
+    // The click and the chime go through the system-sound player, which plays without blocking: NSSound's
+    // stop() and play() on every painted well held up painting.
+    private static let clickID: SystemSoundID? = systemSound("click", seconds: 0.05) { t in
         let env = exp(-t * 90)
         return (sin(2 * .pi * 2300 * t) * 0.35 + Double.random(in: -1...1) * 0.25) * env * 0.35
     }
-    private static let chime: NSSound? = make(seconds: 1.2) { t in
+    private static let chimeID: SystemSoundID? = systemSound("chime", seconds: 1.2) { t in
         let a = sin(2 * .pi * 1318.5 * t) * exp(-t * 3.2)
         let b = t > 0.12 ? sin(2 * .pi * 1975.5 * (t - 0.12)) * exp(-(t - 0.12) * 3.0) : 0
         return (a * 0.5 + b * 0.45) * 0.28
     }
-    private static let hum: NSSound? = {
-        let s = make(seconds: 2.0) { t in
+    /// The hum: an audio player loaded and primed ahead of time (NSSound's play() took ~110 ms to start).
+    private static let hum: AVAudioPlayer? = {
+        let data = wav(seconds: 2.0) { t in
             // a low, steady scanner hum with a slow shimmer; whole cycles so the loop is seamless
             (sin(2 * .pi * 110 * t) * 0.5 + sin(2 * .pi * 220 * t) * 0.25 + sin(2 * .pi * 330 * t) * 0.08)
                 * (0.85 + 0.15 * sin(2 * .pi * 2 * t)) * 0.12
         }
-        s?.loops = true
-        return s
+        guard let data, let p = try? AVAudioPlayer(data: data) else { return nil }
+        p.numberOfLoops = -1
+        p.prepareToPlay()
+        return p
     }()
 
     /// Development: each sound is made and plays.
     static func selfTest() {
         on = true
-        for (name, snd) in [("click", click), ("chime", chime), ("hum", hum)] {
-            print(name, snd.map { String(format: "%.2f s, plays: %@", $0.duration, $0.play() ? "yes" : "no") } ?? "could not be made")
-            snd?.stop()
-        }
+        print("click", clickID != nil ? "made" : "could not be made")
+        print("chime", chimeID != nil ? "made" : "could not be made")
+        _ = hum
+        let h0 = Date()
+        scanning(true)
+        print(String(format: "hum plays: %@, starting it took %.1f ms", hum?.isPlaying == true ? "yes" : "no", Date().timeIntervalSince(h0) * 1000))
+        let s0 = Date()
+        scanning(false)
+        print(String(format: "stopping it took %.1f ms", Date().timeIntervalSince(s0) * 1000))
+        let t0 = Date()
+        for _ in 0..<20 { lastClick = .distantPast; pipette() }
+        print(String(format: "20 clicks took %.1f ms on the main thread", Date().timeIntervalSince(t0) * 1000))
+    }
+
+    /// Makes the sounds in the background, so none is built at the moment it should play.
+    static func prewarm() {
+        guard on else { return }
+        DispatchQueue.global(qos: .utility).async { _ = clickID; _ = chimeID; _ = hum }
     }
 
     static func pipette() {
-        guard on, Date().timeIntervalSince(lastClick) > 0.045 else { return }
+        guard on, Date().timeIntervalSince(lastClick) > 0.045, let id = clickID else { return }
         lastClick = Date()
-        click?.stop(); click?.play()
+        AudioServicesPlaySystemSound(id)
     }
-    static func done() { guard on else { return }; chime?.stop(); chime?.play() }
+    static func done() { guard on, let id = chimeID else { return }; AudioServicesPlaySystemSound(id) }
     static func scanning(_ yes: Bool) {
         guard let h = hum else { return }
-        if yes && on { h.volume = 0.9; h.play() } else { h.stop() }
+        if yes && on {
+            h.currentTime = 0
+            h.volume = 0
+            h.play()
+            h.setVolume(0.9, fadeDuration: 0.4)
+        } else if h.isPlaying {
+            h.setVolume(0, fadeDuration: 0.3)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { if h.volume == 0 { h.pause(); h.prepareToPlay() } }
+        }
+    }
+
+    /// A sound written once to a temporary WAV and registered with the system-sound player.
+    private static func systemSound(_ name: String, seconds: Double, _ f: (Double) -> Double) -> SystemSoundID? {
+        guard let data = wav(seconds: seconds, f) else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("iccplanner-\(name).wav")
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+        var id: SystemSoundID = 0
+        return AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr ? id : nil
     }
 
     /// A mono 16-bit WAV of `seconds`, sample by sample.
-    private static func make(seconds: Double, _ f: (Double) -> Double) -> NSSound? {
+    private static func wav(seconds: Double, _ f: (Double) -> Double) -> Data? {
         let rate = 44100, n = Int(seconds * Double(rate))
         var pcm = Data(capacity: n * 2)
         for i in 0..<n {
@@ -352,21 +538,8 @@ enum Sounds {
         wav.append(contentsOf: Array("RIFF".utf8)); u32(UInt32(36 + pcm.count)); wav.append(contentsOf: Array("WAVE".utf8))
         wav.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(1); u32(UInt32(rate)); u32(UInt32(rate * 2)); u16(2); u16(16)
         wav.append(contentsOf: Array("data".utf8)); u32(UInt32(pcm.count)); wav.append(pcm)
-        return NSSound(data: wav)
+        return wav
     }
 }
 
 
-/// A tube's body: straight sides and a round bottom (works on macOS 13).
-struct TubeShape: Shape {
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        let rad = r.width / 2
-        p.move(to: CGPoint(x: r.minX, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - rad))
-        p.addArc(center: CGPoint(x: r.midX, y: r.maxY - rad), radius: rad, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
-        p.closeSubpath()
-        return p
-    }
-}

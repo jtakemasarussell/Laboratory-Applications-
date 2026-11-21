@@ -205,6 +205,9 @@ struct ContentView: View {
         .overlay(ConfettiLayer())
         .tint(Brand.navy)
         .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room
+        // switching the room rebuilds every view, so none keeps the old colours (views whose inputs did not
+        // change were not redrawn, which left white cards with light text)
+        .id(store.darkRoom)
     }
 }
 
@@ -520,32 +523,7 @@ struct StainCard: View {
                         .buttonStyle(SquishStyle(on: store.motion)).frame(width: 16)
                 }
             }
-            HStack(spacing: 14) {
-            Menu {
-                ForEach(store.library.primaries) { p in
-                    Button("\(p.name)  ·  \(p.company) \(p.cat)  ·  \(p.dilution > 0 ? "1:" + fmtNum(p.dilution) : "dilution not set")\(p.rrid.map { "  ·  RRID " + $0 } ?? "")") {
-                        var n = p; n.id = UUID()
-                        binding.wrappedValue.primaries.append(n)
-                    }
-                }
-                Divider()
-                Button("Blank row") { binding.wrappedValue.primaries.append(Antibody()) }
-                if !store.library.primaries.isEmpty {
-                    Menu("Forget saved antibody") {
-                        ForEach(store.library.primaries) { p in
-                            Button(p.name) { store.library.primaries.removeAll { $0.id == p.id } }
-                        }
-                    }
-                }
-            } label: { Label("Add primary", systemImage: "plus") }
-                .menuStyle(.borderlessButton).fixedSize()
-                FreezerButton(secondaries: false) { id in
-                        guard let p = store.library.primaries.first(where: { $0.id == id }) else { return }
-                        var n = p; n.id = UUID()
-                        binding.wrappedValue.primaries.append(n)
-                        FreezerLog.touch([p.name])
-                    }
-            }
+            FridgeButton(secondaries: false, setID: setID)
 
             columnHeader("2nd", [("", 15), ("2ND · SECONDARY / COUNTERSTAIN", nil), ("DILUTION", 76), ("ADD", 58), ("", 16)])
             ForEach(set.secondaries) { q in
@@ -569,32 +547,7 @@ struct StainCard: View {
                         .buttonStyle(SquishStyle(on: store.motion)).frame(width: 16)
                 }
             }
-            HStack(spacing: 14) {
-            Menu {
-                ForEach(store.library.secondaries) { p in
-                    Button("\(p.name)  ·  1:\(fmtNum(p.dilution))\(p.detail.map { "  ·  " + $0 } ?? "")\(p.cat.map { "  ·  " + $0 } ?? "")") {
-                        var n = p; n.id = UUID()
-                        binding.wrappedValue.secondaries.append(n)
-                    }
-                }
-                Divider()
-                Button("Blank row") { binding.wrappedValue.secondaries.append(Secondary()) }
-                if !store.library.secondaries.isEmpty {
-                    Menu("Forget saved secondary") {
-                        ForEach(store.library.secondaries) { p in
-                            Button(p.name) { store.library.secondaries.removeAll { $0.id == p.id } }
-                        }
-                    }
-                }
-            } label: { Label("Add secondary / counterstain", systemImage: "plus") }
-                .menuStyle(.borderlessButton).fixedSize()
-                FreezerButton(secondaries: true) { id in
-                        guard let q = store.library.secondaries.first(where: { $0.id == id }) else { return }
-                        var n = q; n.id = UUID()
-                        binding.wrappedValue.secondaries.append(n)
-                        FreezerLog.touch([q.name])
-                    }
-            }
+            FridgeButton(secondaries: true, setID: setID)
             PanelStrip(report: report)
         }
         .textFieldStyle(.roundedBorder)
