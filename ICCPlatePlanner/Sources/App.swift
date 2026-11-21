@@ -1229,8 +1229,26 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
     }
     RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     shot("pipette")
+    print("first pass, row H:", fx.view?.pipetteDebug ?? "", "· expected row centre y", fx.gridFrame.minY + 7.5 * fx.ch)
     store.endDrag()
-    for w in 84..<90 { store.exp.wells[w] = nil }
+    // a second pass straight after: row D, columns 5–10, with another stain
+    RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+    store.tool = .paint(store.exp.sets[1].id)
+    for (n, w) in (40..<46).enumerated() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 * Double(n)) { store.touch(w) }
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    shot("pipette2")
+    store.endDrag()
+    RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+    // and a third, after it has gone away: row F, columns 2–4
+    for (n, w) in (61..<64).enumerated() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 * Double(n)) { store.touch(w) }
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    shot("pipette3")
+    store.endDrag()
+    for w in Array(84..<90) + Array(40..<46) + Array(61..<64) { store.exp.wells[w] = nil }
     store.tool = .erase
     RunLoop.main.run(until: Date().addingTimeInterval(0.6))
     // pointing at Stain 2: its wells stay lit, the others sink

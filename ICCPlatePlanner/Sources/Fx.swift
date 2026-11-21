@@ -145,6 +145,9 @@ final class FxView: NSView {
         CATransaction.commit()
     }
 
+    /// Development: where the pipette is, in the drawing layer.
+    var pipetteDebug: String { "root flipped: \(layer?.isGeometryFlipped ?? false) · drawing layer flipped: \(space.isGeometryFlipped), effective top-down: \(space.contentsAreFlipped()) · pipette frame \(pipette.frame) anchor \(pipette.anchorPoint) position \(pipette.position) along row: \(lyingAlongRow)" }
+
     /// Development: the drawing layer's size against the view's.
     var spaceFrame: CGRect { space.frame }
     required init?(coder: NSCoder) { fatalError() }
@@ -390,27 +393,79 @@ final class FxView: NSView {
     // MARK: the multichannel pipette while painting
 
     /// The 8-channel pipette over column `col` (tips over every row); `row` is the one dispensing.
+    /// The well painted just before, to tell which way the drag runs; and which way the pipette lies now.
+    private var lastCell: (col: Int, row: Int)?
+    private var lyingAlongRow = true
+    private var shownAlongRow: Bool?
+
+    /// The multichannel over the wells being painted. It lies the way the drag runs: along a row (a tip over
+    /// each column of that row) or down a column (a tip over each row of that column).
     func pipette(over grid: CGRect, col: Int, row: Int, cw: CGFloat, ch: CGFloat, hex: String) {
+        if let last = lastCell, pipette.opacity > 0 {
+            if last.row == row && last.col != col { lyingAlongRow = true }
+            else if last.col == col && last.row != row { lyingAlongRow = false }
+        }
+        lastCell = (col, row)
+        let along = lyingAlongRow
+        let x = grid.minX + (CGFloat(col) + 0.5) * cw, y = grid.minY + (CGFloat(row) + 0.5) * ch
+        let place = along ? CGPoint(x: grid.minX - 64, y: y) : CGPoint(x: x, y: grid.minY - 64)
         CATransaction.begin()
-        let x = grid.minX + (CGFloat(col) + 0.5) * cw
-        if pipette.opacity == 0 {
+        if pipette.opacity == 0 || shownAlongRow != along || hex != pipetteHex {
             CATransaction.setDisableActions(true)
-            pipette.bounds = CGRect(x: 0, y: 0, width: 46, height: grid.height + 66)
-            pipette.position = CGPoint(x: x, y: grid.minY - 64)
-            pipette.removeAnimation(forKey: "out")
-            pipette.run(frames("opacity", [0, 0.92], [0, 1], 0.18), "in")
-            pipette.opacity = 0.92
+            let size = along ? CGSize(width: grid.width + 66, height: 46) : CGSize(width: 46, height: grid.height + 66)
+            pipette.anchorPoint = along ? CGPoint(x: 0, y: 0.5) : CGPoint(x: 0.5, y: 0)
+            pipette.bounds = CGRect(origin: .zero, size: size)
+            pipette.position = place
+            pipette.contents = along
+                ? Self.image("pipH\(hex)\(Int(cw))x\(Int(grid.width))", size) { c in Self.drawPipetteAlongRow(c, size: size, cw: cw, hex: hex) }
+                : Self.image("pipV\(hex)\(Int(ch))x\(Int(grid.height))", size) { c in Self.drawPipette(c, size: size, ch: ch, hex: hex) }
+            if pipette.opacity == 0 {
+                pipette.removeAnimation(forKey: "out")
+                pipette.run(frames("opacity", [0, 0.92], [0, 1], 0.18), "in")
+                pipette.opacity = 0.92
+            }
+            shownAlongRow = along
+            pipetteHex = hex
         } else {
             CATransaction.setAnimationDuration(0.12)
-            pipette.position = CGPoint(x: x, y: grid.minY - 64)
-        }
-        if hex != pipetteHex {
-            pipetteHex = hex
-            pipette.contents = Self.image("pip2\(hex)\(Int(ch))x\(Int(grid.height))", pipette.bounds.size) { c in
-                Self.drawPipette(c, size: CGSize(width: 46, height: grid.height + 66), ch: ch, hex: hex)
-            }
+            pipette.position = place
         }
         CATransaction.commit()
+    }
+
+    /// The pipette lying along a row: the head on the left, the manifold across the plate, and a tip centred
+    /// over each of the twelve wells of the row.
+    private static func drawPipetteAlongRow(_ c: CGContext, size: CGSize, cw: CGFloat, hex: String) {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let mid = size.height / 2
+        let gridLeft: CGFloat = 64                        // the grid's left edge in this picture
+        c.setFillColor(cg("C9D2DE", 0.95)); c.fill(CGRect(x: 2, y: mid - 3.5, width: 14, height: 7))
+        let head = CGRect(x: 14, y: mid - 14, width: 34, height: 28)
+        c.saveGState()
+        c.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: cg("000000", 0.35))
+        c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.setFillColor(cg("B7C2D0")); c.fillPath()
+        c.restoreGState()
+        c.saveGState(); c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.clip()
+        if let g = CGGradient(colorsSpace: space, colors: [cg("F4F7FA"), cg("C3CCD8"), cg("8F9BAC")] as CFArray, locations: [0, 0.55, 1]) {
+            c.drawLinearGradient(g, start: CGPoint(x: 0, y: head.minY), end: CGPoint(x: 0, y: head.maxY), options: [])
+        }
+        c.restoreGState()
+        c.setFillColor(cg(hex)); c.fill(CGRect(x: 22, y: mid - 9, width: 4, height: 18))      // the colour band
+        let bar = CGRect(x: head.maxX - 2, y: mid - 5, width: gridLeft + 12 * cw - head.maxX - cw * 0.5 + 2, height: 10)
+        let barPath = CGPath(roundedRect: bar, cornerWidth: 5, cornerHeight: 5, transform: nil)
+        c.saveGState(); c.addPath(barPath); c.clip()
+        if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.55), cg("DDE4EC", 0.35), cg("FFFFFF", 0.5)] as CFArray, locations: [0, 0.5, 1]) {
+            c.drawLinearGradient(g, start: CGPoint(x: 0, y: bar.minY), end: CGPoint(x: 0, y: bar.maxY), options: [])
+        }
+        c.restoreGState()
+        c.addPath(barPath); c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8); c.strokePath()
+        for j in 0..<12 {
+            let x = gridLeft + (CGFloat(j) + 0.5) * cw
+            let nub = CGRect(x: x - 4, y: mid - 4, width: 8, height: 8)
+            c.setFillColor(cg("F6F9FC", 0.95)); c.fillEllipse(in: nub)
+            c.setStrokeColor(cg("8E9CAE", 0.9)); c.setLineWidth(0.8); c.strokeEllipse(in: nub)
+            c.setFillColor(cg(hex)); c.fillEllipse(in: nub.insetBy(dx: 2.2, dy: 2.2))
+        }
     }
 
     /// The pipette, seen from above: a head with its plunger and colour band, one frosted manifold running
@@ -501,6 +556,7 @@ final class FxView: NSView {
     }
 
     func pipetteAway() {
+        lastCell = nil
         guard pipette.opacity > 0 else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         pipette.run(frames("opacity", [0.92, 0], [0, 1], 0.35), "out")
