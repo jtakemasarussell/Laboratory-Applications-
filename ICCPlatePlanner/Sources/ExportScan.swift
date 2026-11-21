@@ -101,6 +101,7 @@ final class ExportScanController: NSObject, NSWindowDelegate {
             if e.keyCode == 36, self.run?.done == true { self.openFile(); return nil }   // Return
             return e
         }
+        if store.motion && !wells.isEmpty { Sounds.scanning(true) }
         v.start()
     }
 
@@ -108,6 +109,8 @@ final class ExportScanController: NSObject, NSWindowDelegate {
         guard let r = run, !r.done else { return }
         r.done = true
         finished?(); finished = nil
+        Sounds.scanning(false)
+        Sounds.done()
     }
 
     private func openFile() {
@@ -122,6 +125,7 @@ final class ExportScanController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        Sounds.scanning(false)
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         if let r = run, !r.done { scan?.skip() }       // the confetti still flies
         scan?.stop()

@@ -46,6 +46,7 @@ enum Main {
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
         if a.contains("--pair-qc") { pairQC(); return }
+        if a.contains("--sound-test") { _ = NSApplication.shared; Sounds.selfTest(); return }
         if let i = a.firstIndex(of: "--export-scan-snapshot"), a.count > i + 2, let t = Double(a[i + 2]) {
             exportScanSnapshot(a[i + 1], at: t, plate: a.firstIndex(of: "--plate").flatMap { a.count > $0 + 1 ? a[$0 + 1] : nil })
             return
@@ -200,6 +201,8 @@ struct PlannerApp: App {
                 Toggle("Animations", isOn: $store.animations)
                 Toggle("Trackpad Feedback", isOn: $store.haptics)
                 Toggle("Show Hologram", isOn: $store.showHologram)
+                Toggle("Microscope Room (Dark)", isOn: $store.darkRoom)
+                Toggle("Sounds", isOn: $store.sounds)
                 Toggle("Show Splash at Launch", isOn: Binding(get: { SplashController.enabledAtLaunch }, set: { SplashController.enabledAtLaunch = $0 }))
             }
         }
@@ -264,6 +267,14 @@ final class Store: ObservableObject {
     /// Decorative motion on or off (also follows the Mac's Reduce Motion setting).
     @Published var animations: Bool = UserDefaults.standard.object(forKey: "animations") as? Bool ?? true {
         didSet { if persist { UserDefaults.standard.set(animations, forKey: "animations") } }
+    }
+    /// The microscope room: the app in the dark (File menu).
+    @Published var darkRoom: Bool = Theme.dark {
+        didSet { Theme.dark = darkRoom; if persist { UserDefaults.standard.set(darkRoom, forKey: "darkRoom") } }
+    }
+    /// Soft sounds: a pipette click, the confocal hum, a chime (File menu).
+    @Published var sounds: Bool = Sounds.on {
+        didSet { Sounds.on = sounds; if persist { UserDefaults.standard.set(sounds, forKey: "sounds") } }
     }
     /// The confocal hologram over the selected stain's well (File menu).
     @Published var showHologram: Bool = UserDefaults.standard.object(forKey: "showHologram") as? Bool ?? true {
@@ -754,6 +765,7 @@ final class Store: ObservableObject {
         do {
             try buildWorkbook(exp, settings).write(to: url, options: .atomic)
             library.remember(exp.sets)
+            FreezerLog.touch(exp.sets.flatMap { $0.primaries.map { $0.name } + $0.secondaries.map { $0.name } })
             tap(.levelChange)
             // the export window always follows: the microscope acquires the plate (straight to the end with
             // Animations off or nothing stained), then Open in Excel, Show in Finder or Done is the user's choice
@@ -829,9 +841,26 @@ func snapshot(_ path: String) {
     let a = CommandLine.arguments
     var size = NSSize(width: 1320, height: 860)
     if let i = a.firstIndex(of: "--size"), a.count > i + 2, let w = Double(a[i + 1]), let h = Double(a[i + 2]) { size = NSSize(width: w, height: h) }
+    if a.contains("--dark") { store.darkRoom = true }
+    if let i = a.firstIndex(of: "--freezer"), a.count > i + 1 {
+        // the freezer box on its own (a popover does not show in a snapshot)
+        let tubes = store.library.primaries.enumerated().map { k, p in
+            FreezerTube(id: p.id, label: markerName(p.name), sub: host(ofPrimary: p) ?? p.cat,
+                        capHex: hostCapHex[host(ofPrimary: p) ?? ""] ?? "9AA6B6", frost: [0, 0.1, 0.3, 0.6, 0.9, 1][k % 6])
+        }
+        let fb = NSHostingView(rootView: FreezerBox(tubes: tubes, title: "Primary antibodies · −20 °C", legend: true, motion: false) { _ in }.fixedSize())
+        let fw = NSWindow(contentRect: NSRect(origin: .zero, size: fb.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
+        fw.contentView = fb
+        fb.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        if let rep = fb.bitmapImageRepForCachingDisplay(in: fb.bounds) {
+            fb.cacheDisplay(in: fb.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: a[i + 1]))
+        }
+    }
     let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: size.width, height: size.height))
     let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
-    win.appearance = NSAppearance(named: .aqua)
+    win.appearance = NSAppearance(named: store.darkRoom ? .darkAqua : .aqua)
     win.contentView = host
     if let i = a.firstIndex(of: "--holo"), a.count > i + 2, let k = Int(a[i + 1]), let t = Double(a[i + 2]), k >= 1, k <= store.exp.sets.count {
         // the hologram over stain k, `t` seconds into the protocol
@@ -1081,6 +1110,7 @@ extension Store {
         let dye = panel(exp.sets[k]).channels.first { !$0.fluor.counterstain }?.fluor.hex ?? hex
         fx.view?.pipette(over: fx.gridFrame, col: w % 12, row: w / 12, cw: fx.cw, ch: fx.ch, hex: dye)
         fx.view?.drop(at: fx.wellCenter(w), hex: hex, ch: fx.ch)
+        Sounds.pipette()
         let accent = setAccentHex(exp.sets[k], k)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { fx.view?.pop(at: fx.wellCenter(w), fill: hex, accent: accent, cw: fx.cw, ch: fx.ch) }
     }

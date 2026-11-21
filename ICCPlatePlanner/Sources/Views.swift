@@ -10,14 +10,22 @@ enum Brand {
     static let author = "Joey Russell"
 
     // Palette taken from the department's slide banner: navy -> blue -> pale blue-white.
-    static let navy = Color(hex: "1E4A83")
-    static let mid = Color(hex: "4A78B8")
-    static let pale = Color(hex: "E8EEF6")
-    static let rule = Color(hex: "D5DEEB")
-    static let ink = Color(hex: "172033")
-    static let gradient = LinearGradient(
-        stops: [.init(color: navy, location: 0), .init(color: mid, location: 0.5), .init(color: pale, location: 1)],
-        startPoint: .leading, endPoint: .trailing)
+    // In the microscope room (Theme.dark) the same roles take night colours.
+    static var navy: Color { Color(hex: Theme.dark ? "8DB8F2" : "1E4A83") }
+    static var mid: Color { Color(hex: Theme.dark ? "6E9BDC" : "4A78B8") }
+    static var pale: Color { Color(hex: Theme.dark ? "16233A" : "E8EEF6") }
+    static var rule: Color { Color(hex: Theme.dark ? "2A3A52" : "D5DEEB") }
+    static var ink: Color { Color(hex: Theme.dark ? "E3EBF6" : "172033") }
+    /// Card and page surfaces.
+    static var card: Color { Theme.dark ? Color(hex: "111B2B") : .white }
+    static var page: Color { Color(hex: Theme.dark ? "0A1220" : "F7F9FC") }
+    static var gradient: LinearGradient {
+        Theme.dark
+            ? LinearGradient(stops: [.init(color: Color(hex: "08111F"), location: 0), .init(color: Color(hex: "13294A"), location: 0.6), .init(color: Color(hex: "1B3A66"), location: 1)],
+                             startPoint: .leading, endPoint: .trailing)
+            : LinearGradient(stops: [.init(color: Color(hex: "1E4A83"), location: 0), .init(color: Color(hex: "4A78B8"), location: 0.5), .init(color: Color(hex: "E8EEF6"), location: 1)],
+                             startPoint: .leading, endPoint: .trailing)
+    }
 
     /// Department logo shipped inside the app bundle (the same image used on the slide banner).
     static let logo: NSImage? = Bundle.main.url(forResource: "DeptLogo", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
@@ -87,7 +95,7 @@ extension Binding where Value: MutableCollection, Value.Element: Identifiable {
 struct CardBackground: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.white)
+            .fill(Brand.card)
             .shadow(color: Brand.navy.opacity(0.10), radius: 7, x: 0, y: 2)
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Brand.rule, lineWidth: 1))
     }
@@ -179,7 +187,7 @@ struct ContentView: View {
             }
         }
         .background(
-            LinearGradient(colors: [Brand.pale.opacity(0.75), Color(hex: "F7F9FC")], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [Brand.pale.opacity(0.75), Brand.page], startPoint: .top, endPoint: .bottom)
         )
         .overlay(alignment: .top) {
             ZStack {
@@ -196,7 +204,7 @@ struct ContentView: View {
         .overlay(FxOverlay().allowsHitTesting(false))
         .overlay(ConfettiLayer())
         .tint(Brand.navy)
-        .preferredColorScheme(.light)   // the department look is a white page with navy accents
+        .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room
     }
 }
 
@@ -223,7 +231,7 @@ struct HeaderBar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Brand.navy)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white))
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Brand.card))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Brand.navy.opacity(0.35), lineWidth: 1))
                     .contentShape(Rectangle())
             }
@@ -233,7 +241,7 @@ struct HeaderBar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Brand.navy)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white))
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Brand.card))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Brand.navy.opacity(0.35), lineWidth: 1))
                     .contentShape(Rectangle())
             }
@@ -243,7 +251,7 @@ struct HeaderBar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Brand.navy)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white))
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Brand.card))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Brand.navy.opacity(0.35), lineWidth: 1))
                     .contentShape(Rectangle())
             }
@@ -317,7 +325,7 @@ struct OutputStrip: View {
         }
         .padding(.horizontal, 20)
         .frame(height: 34)
-        .background(Color.white)
+        .background(Brand.card)
         .overlay(Rectangle().fill(Brand.rule).frame(height: 1), alignment: .bottom)
     }
 }
@@ -398,6 +406,10 @@ struct ExperimentSection: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.leading, 4)
+                    if s.hasDay0 {
+                        SampleTimeline(day0: s.day0, fixed: store.exp.fixedDate(s, store.settings), staining: store.exp.date)
+                            .padding(.leading, 4).padding(.top, 2)
+                    }
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Brand.pale.opacity(0.55)))
@@ -508,6 +520,7 @@ struct StainCard: View {
                         .buttonStyle(SquishStyle(on: store.motion)).frame(width: 16)
                 }
             }
+            HStack(spacing: 14) {
             Menu {
                 ForEach(store.library.primaries) { p in
                     Button("\(p.name)  ·  \(p.company) \(p.cat)  ·  \(p.dilution > 0 ? "1:" + fmtNum(p.dilution) : "dilution not set")\(p.rrid.map { "  ·  RRID " + $0 } ?? "")") {
@@ -526,6 +539,13 @@ struct StainCard: View {
                 }
             } label: { Label("Add primary", systemImage: "plus") }
                 .menuStyle(.borderlessButton).fixedSize()
+                FreezerButton(secondaries: false) { id in
+                        guard let p = store.library.primaries.first(where: { $0.id == id }) else { return }
+                        var n = p; n.id = UUID()
+                        binding.wrappedValue.primaries.append(n)
+                        FreezerLog.touch([p.name])
+                    }
+            }
 
             columnHeader("2nd", [("", 15), ("2ND · SECONDARY / COUNTERSTAIN", nil), ("DILUTION", 76), ("ADD", 58), ("", 16)])
             ForEach(set.secondaries) { q in
@@ -549,6 +569,7 @@ struct StainCard: View {
                         .buttonStyle(SquishStyle(on: store.motion)).frame(width: 16)
                 }
             }
+            HStack(spacing: 14) {
             Menu {
                 ForEach(store.library.secondaries) { p in
                     Button("\(p.name)  ·  1:\(fmtNum(p.dilution))\(p.detail.map { "  ·  " + $0 } ?? "")\(p.cat.map { "  ·  " + $0 } ?? "")") {
@@ -567,6 +588,13 @@ struct StainCard: View {
                 }
             } label: { Label("Add secondary / counterstain", systemImage: "plus") }
                 .menuStyle(.borderlessButton).fixedSize()
+                FreezerButton(secondaries: true) { id in
+                        guard let q = store.library.secondaries.first(where: { $0.id == id }) else { return }
+                        var n = q; n.id = UUID()
+                        binding.wrappedValue.secondaries.append(n)
+                        FreezerLog.touch([q.name])
+                    }
+            }
             PanelStrip(report: report)
         }
         .textFieldStyle(.roundedBorder)
@@ -574,7 +602,7 @@ struct StainCard: View {
         .padding(.leading, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white)
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Brand.card)
                 .overlay(alignment: .leading) {
                     Rectangle().fill(accent).frame(width: 5)
                 }
@@ -881,6 +909,9 @@ struct PlateGrid: View {
                 }
             }
         }
+        // in the microscope room the stained wells glow from behind
+        .background(store.darkRoom ? RoomGlow(wells: (0..<96).compactMap { w in wells[w].flatMap { ids.firstIndex(of: $0) }.map { (w, fills[$0]) } }, cw: cw, ch: ch)
+                        .allowsHitTesting(false).padding(-8) : nil)
         .overlay(GlintLane(stained: (0..<96).filter { w in wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
                     .allowsHitTesting(false))
         .overlay(SpotVeil(wells: spot.map { id in (0..<96).filter { wells[$0] == id } } ?? [],
@@ -969,7 +1000,8 @@ struct WellCell: View, Equatable {
                 .multilineTextAlignment(.center)
                 .minimumScaleFactor(0.65)
                 // light on an empty (dark) well or a dark stain, dark ink on a pale stain
-                .foregroundColor(fill == nil || dark ? Color(hex: "E3ECF7") : Brand.ink)
+                // pale stains always get dark lettering (also in the microscope room)
+                .foregroundColor(fill == nil || dark ? Color(hex: "E3ECF7") : Color(hex: "172033"))
                 .padding(2)
         }
         .overlay(alignment: .topTrailing) {
