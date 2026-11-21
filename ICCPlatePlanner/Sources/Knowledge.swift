@@ -93,10 +93,24 @@ func facts(for p: Antibody) -> ProductFacts? {
     guard !k.isEmpty else { return nil }
     if let f = primaryIndex[k] { return f }
     if let alias = catAliases[k] { return primaryIndex[catKey(alias)] }
+    // otherwise the manufacturer's record from the Antibody Registry, once it has been looked up
+    if let r = Registry.shared.record(p.cat) {
+        let host = species(r.sourceOrganism.lowercased()) ?? r.sourceOrganism.lowercased()
+        guard !host.isEmpty else { return nil }
+        return ProductFacts(maker: r.vendorName, cat: r.catalogNum, target: r.abTarget, host: host, clonality: r.clonality.lowercased(),
+                            source: "Antibody Registry, RRID \(r.rrid)")
+    }
     return nil
 }
 
 func facts(for q: Secondary) -> SecondaryFacts? {
     guard let c = q.cat, !catKey(c).isEmpty else { return nil }
-    return secondaryIndex[catKey(c)]
+    if let f = secondaryIndex[catKey(c)] { return f }
+    if let r = Registry.shared.record(c),
+       let target = r.abTarget.split(whereSeparator: { !$0.isLetter }).compactMap({ species(String($0).lowercased()) }).first,
+       let dye = r.abName.split(whereSeparator: { !$0.isNumber }).compactMap({ Int($0) }).first(where: { [350, 405, 488, 532, 546, 555, 568, 594, 633, 647, 660, 680, 750].contains($0) }) {
+        return SecondaryFacts(maker: r.vendorName, cat: r.catalogNum, raisedIn: r.sourceOrganism.lowercased(), target: target, dye: dye,
+                              source: "Antibody Registry, RRID \(r.rrid)")
+    }
+    return nil
 }

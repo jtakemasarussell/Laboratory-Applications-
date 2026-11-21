@@ -49,19 +49,39 @@ let fxSpace = "fxroot"
 struct FxAnchor: NSViewRepresentable {
     enum Kind { case grid, card(UUID) }
     let kind: Kind
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context: Context) -> AnchorView {
         let v = AnchorView(frame: .zero)
-        register(v)
+        v.kind = kind
         return v
     }
-    func updateNSView(_ v: NSView, context: Context) { register(v) }
-    private func register(_ v: NSView) {
-        switch kind {
-        case .grid: FxCenter.shared.gridAnchor = v
-        case .card(let id): FxCenter.shared.cardAnchors[id] = FxCenter.Weak(v)
+    func updateNSView(_ v: AnchorView, context: Context) {
+        v.kind = kind
+        if v.window != nil { v.register() }
+    }
+
+    /// Registers itself when it joins a window and lets go only if it is still the one registered: when the
+    /// window is rebuilt (switching the microscope room), the old markers leave after the new ones arrive,
+    /// and clearing on make/update let a departing marker take the effects' targets with it.
+    final class AnchorView: NSView {
+        var kind: Kind = .grid
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { register() } else { unregister() }
+        }
+        func register() {
+            switch kind {
+            case .grid: FxCenter.shared.gridAnchor = self
+            case .card(let id): FxCenter.shared.cardAnchors[id] = FxCenter.Weak(self)
+            }
+        }
+        private func unregister() {
+            switch kind {
+            case .grid: if FxCenter.shared.gridAnchor === self { FxCenter.shared.gridAnchor = nil }
+            case .card(let id): if FxCenter.shared.cardAnchors[id]?.view === self { FxCenter.shared.cardAnchors[id] = nil }
+            }
         }
     }
-    final class AnchorView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
 }
 
 extension View {
@@ -72,12 +92,8 @@ extension View {
 }
 
 struct FxOverlay: NSViewRepresentable {
-    func makeNSView(context: Context) -> FxView {
-        let v = FxView(frame: .zero)
-        FxCenter.shared.view = v
-        return v
-    }
-    func updateNSView(_ v: FxView, context: Context) { FxCenter.shared.view = v }
+    func makeNSView(context: Context) -> FxView { FxView(frame: .zero) }
+    func updateNSView(_ v: FxView, context: Context) { if v.window != nil { FxCenter.shared.view = v } }
 }
 
 private extension CALayer {
@@ -119,12 +135,26 @@ final class FxView: NSView {
 
     override func layout() {
         super.layout()
+        fitSpace()
+    }
+
+    private func fitSpace() {
+        guard space.frame != bounds else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         space.frame = bounds
         CATransaction.commit()
     }
+
+    /// Development: the drawing layer's size against the view's.
+    var spaceFrame: CGRect { space.frame }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    // the effects layer in the window, kept the same way as the markers
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { FxCenter.shared.view = self } else if FxCenter.shared.view === self { FxCenter.shared.view = nil }
+    }
 
     private static func image(_ key: String, _ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
         if let i = images[key] { return i }
@@ -197,18 +227,16 @@ final class FxView: NSView {
             move.timingFunctions = [CAMediaTimingFunction(controlPoints: 0.3, 0, 0.25, 1)]
             let g = CAAnimationGroup()
             if rejected {
-                // arrives, bumps the well, and is knocked off: it springs back up and falls away, spinning
-                let away = CGPoint(x: to.x + (k % 2 == 0 ? 22 : -22), y: to.y + 46)
-                let bounce = CAKeyframeAnimation(keyPath: "position")
-                bounce.values = [NSValue(point: to), NSValue(point: CGPoint(x: (to.x + away.x) / 2, y: to.y - 20)), NSValue(point: away)]
-                bounce.keyTimes = [0, 0.4, 1]
-                bounce.duration = 0.55
-                bounce.beginTime = d
-                bounce.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeIn)]
-                g.animations = [move, bounce,
-                                frames("opacity", [0, 1, 1, 1, 0], [0, 0.08, 0.6, 0.85, 1], d + 0.55),
-                                frames("transform.rotation.z", [-0.6, 0.4, 0, 2.6], [0, 0.4, 0.62, 1], d + 0.55),
-                                frames("transform.scale", [0.6, 1.25, 1.0, 0.7], [0, 0.35, 0.62, 1], d + 0.55)]
+                // lands on its well, shudders there (it cannot bind) and fades where it stands
+                let shake = CAKeyframeAnimation(keyPath: "position.x")
+                shake.values = [to.x, to.x - 4, to.x + 4, to.x - 3, to.x + 3, to.x]
+                shake.keyTimes = [0, 0.2, 0.4, 0.6, 0.8, 1]
+                shake.duration = 0.45
+                shake.beginTime = d
+                g.animations = [move, shake,
+                                frames("opacity", [0, 1, 1, 1, 0], [0, 0.08, 0.6, 0.8, 1], d + 0.55),
+                                frames("transform.rotation.z", [-0.6, 0.4, 0, 0], [0, 0.4, 0.62, 1], d + 0.55),
+                                frames("transform.scale", [0.6, 1.25, 1.0, 0.85], [0, 0.35, 0.62, 1], d + 0.55)]
                 g.duration = d + 0.55
             } else {
                 g.animations = [move,

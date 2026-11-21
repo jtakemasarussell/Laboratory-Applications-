@@ -38,6 +38,8 @@ let hostCapHex: [String: String] = [
 
 struct FridgeTube: Identifiable {
     let id: UUID
+    let regKey: String      // its manufacturer check
+
     let label: String       // what the tube says: the marker, or the secondary's short name
     let detail: String      // company · Cat#
     let dilution: String    // "1:500"
@@ -72,6 +74,7 @@ struct FridgeButton: View {
 
 struct FridgeRack: View {
     @EnvironmentObject var store: Store
+    @ObservedObject var registry = Registry.shared
     let secondaries: Bool
     let setID: UUID
     let motion: Bool
@@ -87,7 +90,7 @@ struct FridgeRack: View {
         if secondaries {
             list = store.library.secondaries.map { q in
                 let detail = [q.company ?? "", q.cat ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-                return FridgeTube(id: q.id, label: q.name, detail: detail, dilution: q.dilution > 0 ? "1:\(fmtNum(q.dilution))" : "1:?",
+                return FridgeTube(id: q.id, regKey: Registry.key(q.cat ?? "", q.name), label: q.name, detail: detail, dilution: q.dilution > 0 ? "1:\(fmtNum(q.dilution))" : "1:?",
                                   capHex: secondaryFluor(q)?.hex ?? "9AA6B6", age: FreezerLog.age(q.name),
                                   help: [q.name, q.detail ?? "", detail].filter { !$0.isEmpty }.joined(separator: "\n"))
             }
@@ -95,7 +98,7 @@ struct FridgeRack: View {
             list = store.library.primaries.map { p in
                 let host = host(ofPrimary: p) ?? ""
                 let detail = [p.company, p.cat].filter { !$0.isEmpty }.joined(separator: " · ")
-                return FridgeTube(id: p.id, label: markerName(p.name), detail: detail, dilution: p.dilution > 0 ? "1:\(fmtNum(p.dilution))" : "1:?",
+                return FridgeTube(id: p.id, regKey: Registry.key(p.cat, p.name), label: markerName(p.name), detail: detail, dilution: p.dilution > 0 ? "1:\(fmtNum(p.dilution))" : "1:?",
                                   capHex: hostCapHex[host] ?? "9AA6B6", age: FreezerLog.age(p.name),
                                   help: [p.name, detail, p.rrid.map { "RRID " + $0 } ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"))
             }
@@ -104,6 +107,30 @@ struct FridgeRack: View {
     }
 
     private var cardIndex: Int? { store.exp.sets.firstIndex { $0.id == setID } }
+
+    /// Every tube with a catalogue number checked against the manufacturer's record.
+    private func checkAll(force: Bool) {
+        if secondaries { store.library.secondaries.forEach { Registry.shared.check(secondary: $0, force: force) } }
+        else { store.library.primaries.forEach { Registry.shared.check(primary: $0, force: force) } }
+    }
+
+    /// The tube being typed in, as an antibody, so it can be checked as you type.
+    private var draftPrimary: Antibody {
+        Antibody(name: fName.wrappedValue, company: fCompany.wrappedValue, cat: fCat.wrappedValue, dilution: 0, rrid: nil)
+    }
+    private var draftSecondary: Secondary {
+        Secondary(name: fName.wrappedValue, dilution: 0, detail: fProduct.wrappedValue, company: fCompany.wrappedValue, cat: fCat.wrappedValue)
+    }
+    private var draftKey: String { Registry.key(fCat.wrappedValue, fName.wrappedValue) }
+
+    /// Fills the form from the manufacturer's record.
+    private func use(_ r: RegistryRecord) {
+        let firstCat = r.catalogNum.components(separatedBy: CharacterSet(charactersIn: " ,(")).first ?? r.catalogNum
+        fCat.wrappedValue = firstCat
+        fCompany.wrappedValue = r.vendorName
+        fRRID.wrappedValue = r.rrid
+        if secondaries { fProduct.wrappedValue = r.abName }
+    }
 
     private func take(_ id: UUID) {
         guard let k = cardIndex else { return }
@@ -146,6 +173,7 @@ struct FridgeRack: View {
             if toCard, let k = cardIndex { var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n) }
         }
         FreezerLog.touch([name])
+        if secondaries { Registry.shared.check(secondary: draftSecondary) } else { Registry.shared.check(primary: draftPrimary) }
         for f in [fName, fCompany, fCat, fDilution, fRRID, fProduct] { f.wrappedValue = "" }
         showForm.wrappedValue = false
         if toCard { close() }
@@ -188,6 +216,18 @@ struct FridgeRack: View {
             }
             Text("Click a tube to add it · right-click to take it out of the fridge · grey and faint: not used for weeks")
                 .font(.system(size: 10)).foregroundColor(Color(hex: "6F87A8"))
+            HStack(spacing: 8) {
+                let checked = tubes.compactMap { registry.result($0.regKey) }
+                let ok = checked.filter { if case .verified = $0.status { return true }; return false }.count
+                let bad = checked.filter { switch $0.status { case .mismatch: return true; case .notFound(let near): return near != nil; default: return false } }.count
+                Image(systemName: "checkmark.seal").foregroundColor(Color(hex: "3BB36A"))
+                Text("Manufacturer check: \(ok) match\(bad > 0 ? " · \(bad) to look at" : "") · \(tubes.count - checked.count) without a Cat#")
+                    .font(.system(size: 10.5)).foregroundColor(Color(hex: "BFE3FF"))
+                Spacer()
+                Button("Check all again") { checkAll(force: true) }
+                    .buttonStyle(.borderless).font(.system(size: 10.5, weight: .semibold)).foregroundColor(Color(hex: "BFE3FF"))
+                    .help("Ask the Antibody Registry again for every tube with a catalogue number")
+            }
             Divider().overlay(Color.white.opacity(0.15))
             if showForm.wrappedValue { form } else {
                 HStack(spacing: 12) {
@@ -202,6 +242,7 @@ struct FridgeRack: View {
         .padding(14)
         .frame(width: 458)
         .background(LinearGradient(colors: [Color(hex: "0E1B2C"), Color(hex: "142740")], startPoint: .top, endPoint: .bottom))
+        .onAppear { checkAll(force: false) }
     }
 
     /// A new tube: its name and what the lab records about it.
@@ -217,6 +258,14 @@ struct FridgeRack: View {
                 HStack { field("Company", fCompany); field("Cat#", fCat) }
                 HStack { field("Dilution, e.g. 1000", fDilution); field("RRID", fRRID) }
             }
+            // the manufacturer's record, looked up as you type the catalogue number
+            RegistryLine(result: registry.result(draftKey)) { rec in use(rec) }
+                .task(id: draftKey + fCompany.wrappedValue) {
+                    guard catKey(fCat.wrappedValue).count >= 3 else { return }
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    guard !Task.isCancelled else { return }
+                    if secondaries { Registry.shared.check(secondary: draftSecondary) } else { Registry.shared.check(primary: draftPrimary) }
+                }
             HStack {
                 Button("Cancel") { showForm.wrappedValue = false }
                 Spacer()
@@ -268,6 +317,7 @@ struct FridgeRack: View {
                 }
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+            .overlay(alignment: .topLeading) { RegistryBadge(result: registry.result(t.regKey)).offset(x: 2, y: 2) }
             .offset(y: up ? -18 : 0)
             .contentShape(Rectangle())
         }

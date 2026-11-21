@@ -46,6 +46,29 @@ enum Main {
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
         if a.contains("--pair-qc") { pairQC(); return }
+        if a.contains("--registry-test") {
+            // live: the lab's antibodies, two catalogue typos and a mislabelled secondary, checked with the registry
+            _ = NSApplication.shared
+            let prims = [Antibody(name: "FOXA2 (g)", company: "R&D Systems", cat: "AF2400"),
+                         Antibody(name: "TH (mouse)", company: "Merck", cat: "MAB318"),
+                         Antibody(name: "Corin (rat)", company: "R&D Systems", cat: "MAB2209"),
+                         Antibody(name: "Pitx2 (sheep)", company: "R&D", cat: "AD7388"),
+                         Antibody(name: "Barhl1 (rab)", company: "Novus Bio", cat: "NBO1-86513"),
+                         Antibody(name: "TH (rab)", company: "Merck", cat: "MAB318")]
+            let secs = [Secondary(name: "647 rab", dilution: 400, company: "Thermo Fisher", cat: "A-31571"),
+                        Secondary(name: "594 g", dilution: 500, company: "Thermo Fisher", cat: "A-11058")]
+            prims.forEach { Registry.shared.check(primary: $0, force: true) }
+            secs.forEach { Registry.shared.check(secondary: $0, force: true) }
+            let t0 = Date()
+            while Date().timeIntervalSince(t0) < 25 {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+                let keys = prims.map { Registry.key($0.cat, $0.name) } + secs.map { Registry.key($0.cat ?? "", $0.name) }
+                if keys.allSatisfy({ k in Registry.shared.result(k).map { if case .checking = $0.status { return false }; return true } ?? false }) { break }
+            }
+            for p in prims { let r = Registry.shared.result(Registry.key(p.cat, p.name)); print("\(p.name) · \(p.cat):", r?.summary ?? "no answer"); r?.notes.forEach { print("     note:", $0) } }
+            for q in secs { let r = Registry.shared.result(Registry.key(q.cat ?? "", q.name)); print("\(q.name) · \(q.cat ?? ""):", r?.summary ?? "no answer") }
+            return
+        }
         if let i = a.firstIndex(of: "--theme-shot"), a.count > i + 1 {
             // the real window: start in the light, switch to the microscope room while it runs, and back
             let app = NSApplication.shared
@@ -872,7 +895,8 @@ func snapshot(_ path: String) {
         let fw = NSWindow(contentRect: NSRect(origin: .zero, size: fb.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
         fw.contentView = fb
         fb.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        // let the live manufacturer checks come back
+        RunLoop.main.run(until: Date().addingTimeInterval(a.contains("--wait") ? 12 : 0.5))
         if let rep = fb.bitmapImageRepForCachingDisplay(in: fb.bounds) {
             fb.cacheDisplay(in: fb.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: a[i + 1]))
@@ -1156,6 +1180,12 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
         try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: outPrefix + name + ".png"))
     }
     let fx = FxCenter.shared
+    if CommandLine.arguments.contains("--toggle-dark") {
+        // what a user does: switch the microscope room on and off (the window is rebuilt each time)
+        store.darkRoom.toggle(); RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        store.darkRoom.toggle(); RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    }
+    print("effects can play:", fx.usable, "· grid anchor:", fx.gridAnchor != nil, "· cards:", fx.cardFrames.count)
     print("grid frame:", fx.gridFrame, "fx view:", fx.view?.frame ?? .zero, "flipped:", fx.view?.isFlipped ?? false, "superview flipped:", fx.view?.superview?.isFlipped ?? false)
     // the last stain (lowest wells) flies
     let id = store.exp.sets[min(4, store.exp.sets.count - 1)].id
@@ -1181,13 +1211,19 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
         RunLoop.main.run(until: Date().addingTimeInterval(1.6))
         shot("clashstill")                  // after the pulse: the wells stay outlined in red
         store.fxFly(store.exp.sets[0].id)    // antibodies for the wrong pairing fly red
-        RunLoop.main.run(until: Date().addingTimeInterval(1.05))
-        shot("clashfly")
+        for (k, t) in [0.5, 0.95, 1.15].enumerated() {
+            RunLoop.main.run(until: Date().addingTimeInterval(t - (k == 0 ? 0 : [0.5, 0.95, 1.15][k - 1])))
+            shot("clashfly\(k)")
+        }
         store.exp.sets[0].secondaries[0].name = before
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     }
     // painting row H with the pipette
     store.tool = .paint(store.exp.sets[0].id)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    if let g = fx.gridAnchor { print("before painting: grid frame", fx.gridFrame, "anchor", g.frame, "in", type(of: g.superview!), "window ok:", g.window === fx.view?.window) }
+    print("cards:", fx.cardFrames.count, "first:", fx.cardFrames.values.first ?? .zero)
+    print("effects layer:", fx.view?.spaceFrame ?? .zero, "view bounds:", fx.view?.bounds ?? .zero)
     for (n, w) in (84..<90).enumerated() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 * Double(n)) { store.touch(w) }
     }
