@@ -139,6 +139,50 @@ func fxShot2(_ platePath: String, _ out: String) {
     fw.orderOut(nil)
     wait(0.3)
 
+    // opening a plate: frozen under its lid, the frost melts off the lid, then the lid comes off
+    win.orderFrontRegardless()
+    store.fxLid(lowering: false, holdFor: 1.95)
+    store.fxThaw()
+    wait(0.6); shot("open-frost")
+    wait(1.1); shot("open-melt")
+    wait(0.75); shot("open-lift")
+    wait(1.2)
+
+    // deep wells, the plate leaning one way and then the other
+    if let t = TiltModel.current {
+        t.x = 0.95; t.y = -0.95
+        wait(0.4); shot("deep-a")
+        t.x = -0.95; t.y = 0.95
+        wait(0.4); shot("deep-b")
+        t.x = 0; t.y = 0
+        wait(0.4)
+    }
+
+    // a stain card on its own: its spectrum when picked, and the mixing tube when a dilution changes
+    store.tool = .paint(store.exp.sets[0].id)
+    let card = NSHostingView(rootView: StainCard(setID: store.exp.sets[0].id, index: 0).environmentObject(store).frame(width: 548))
+    card.layoutSubtreeIfNeeded()
+    let csize = card.fittingSize
+    let cwin = NSWindow(contentRect: NSRect(x: 60, y: 60, width: csize.width, height: csize.height), styleMask: [.titled], backing: .buffered, defer: false)
+    cwin.contentView = card
+    cwin.orderFrontRegardless()
+    wait(0.45); shot("spectrum-firing", cwin)
+    wait(1.3); shot("spectrum", cwin)
+    if !store.exp.sets[0].primaries.isEmpty {
+        store.exp.sets[0].primaries[0].dilution = store.exp.sets[0].primaries[0].dilution == 500 ? 1000 : 500
+        wait(0.3); shot("mix-pour", cwin)
+        wait(0.6); shot("mix-swirl", cwin)
+        wait(1.2); shot("mix-done", cwin)
+    }
+    if !store.exp.sets[0].secondaries.isEmpty {
+        let before = store.exp.sets[0].secondaries[0].name
+        store.exp.sets[0].secondaries[0].name = "555 rab"         // shares the 561 laser with a 594
+        wait(1.8); shot("spectrum-overlap", cwin)
+        store.exp.sets[0].secondaries[0].name = before
+        wait(0.5)
+    }
+    cwin.orderOut(nil)
+
     // the room lights going out, then coming back on
     win.orderFrontRegardless()
     store.switchRoom(true)

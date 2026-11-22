@@ -318,6 +318,7 @@ final class FxView: NSView {
         sheet.cornerRadius = 14
         sheet.masksToBounds = true
         sheet.opacity = 0
+        sheet.zPosition = 25              // on the lid: the frost melts off it before the lid comes off
         root.addSublayer(sheet)
         // the sheet melts from the edges inwards: a mask of 96 well-sized tiles that vanish edge-first
         let mask = CALayer()

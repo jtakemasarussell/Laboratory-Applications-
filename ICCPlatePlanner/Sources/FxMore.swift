@@ -110,7 +110,7 @@ extension FxView {
 
     /// The black ibidi lid: lifted off a plate that has just been opened, or lowered on when it is saved
     /// (it clicks into place, then fades so the plate stays in view).
-    func lid(over plate: CGRect, grid: CGRect, cw: CGFloat, ch: CGFloat, lowering: Bool) {
+    func lid(over plate: CGRect, grid: CGRect, cw: CGFloat, ch: CGFloat, lowering: Bool, holdFor hold: Double = 0) {
         guard plate.width > 0, plate.height > 0 else { return }
         let root = space
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -147,14 +147,16 @@ extension FxView {
             DispatchQueue.main.asyncAfter(deadline: .now() + d * 0.25) { Sounds.lid() }
             expire(l, after: d + 0.05); expire(shadow, after: d + 0.05)
         } else {
-            let d = 0.8, t: [Double] = [0, 0.2, 1]
+            // on the plate (under the frost, if it is thawing) for `hold` seconds, then lifted off
+            let lift = 0.8, d = hold + lift
+            let t: [Double] = [0, hold / d, (hold + 0.16) / d, 1]
             let g = CAAnimationGroup()
-            g.animations = [frames("position.y", [c.y, c.y - 2, c.y - 40], t, d),
-                            frames("transform.scale", [1, 1.005, 1.05], t, d),
-                            frames("opacity", [1, 1, 0], t, d)]
+            g.animations = [frames("position.y", [c.y, c.y, c.y - 2, c.y - 40], t, d),
+                            frames("transform.scale", [1, 1, 1.005, 1.05], t, d),
+                            frames("opacity", [1, 1, 1, 0], t, d)]
             g.duration = d
             l.run(g, "lift")
-            shadow.run(frames("opacity", [0.7, 0.7, 0], [0, 0.2, 0.7], d), "lift")
+            shadow.run(frames("opacity", [0.7, 0.7, 0.7, 0], [0, hold / d, (hold + 0.16) / d, (hold + lift * 0.7) / d], d), "lift")
             expire(l, after: d + 0.05); expire(shadow, after: d + 0.05)
         }
     }

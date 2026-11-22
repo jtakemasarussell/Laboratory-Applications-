@@ -485,6 +485,13 @@ struct StainCard: View {
                     .menuStyle(.borderlessButton).fixedSize()
                     .help("Quick colours for this stain's wells")
                 Spacer()
+                MixTube(dyes: report.channels.map { $0.fluor.hex },
+                        level: CGFloat(min(1, vol / 1500)) * 0.75 + 0.15,
+                        key: "\(vol)|" + set.primaries.map { "\($0.dilution)" }.joined(separator: ",") + "|"
+                            + set.secondaries.map { "\($0.name):\($0.dilution)" }.joined(separator: ","),
+                        motion: store.motion)
+                    .frame(width: 13, height: 26)
+                    .help("This stain's mix: blocking buffer with its antibodies and dyes")
                 Text("Volume").foregroundStyle(.secondary)
                 TextField(fmtNum(auto), value: binding.volumeOverride, format: plain)
                     .frame(width: 66)
@@ -549,6 +556,10 @@ struct StainCard: View {
             }
             FridgeButton(secondaries: true, setID: setID)
             PanelStrip(report: report)
+            // picked to paint with: its spectrum
+            if store.tool == .paint(setID), !report.channels.isEmpty {
+                SpectralStrip(channels: report.channels, motion: store.motion)
+            }
         }
         .textFieldStyle(.roundedBorder)
         .padding(14)
@@ -822,6 +833,8 @@ struct PlateSection: View {
                     }
                 }
                 PlateGrid(paint: store.paint, hover: hover, cw: cw, ch: ch)
+                    // the wells' depth, leaning with the plate
+                    .overlay(DeepWells(tilt: tilt, cw: cw, ch: ch).allowsHitTesting(false))
                     .background(
                         // the raised deck the wells sit in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)

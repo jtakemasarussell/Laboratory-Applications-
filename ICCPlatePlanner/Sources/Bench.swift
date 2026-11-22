@@ -584,7 +584,7 @@ enum Sounds {
     /// Makes the sounds in the background, so none is built at the moment it should play.
     static func prewarm() {
         guard on else { return }
-        DispatchQueue.global(qos: .utility).async { _ = clickID; _ = chimeID; _ = hum; _ = lidID; _ = aspirateID; _ = washID; _ = snapID }
+        DispatchQueue.global(qos: .utility).async { _ = clickID; _ = chimeID; _ = hum; _ = lidID; _ = aspirateID; _ = washID; _ = snapID}
     }
 
     static func pipette() {

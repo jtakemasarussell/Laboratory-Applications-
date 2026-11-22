@@ -857,8 +857,11 @@ final class Store: ObservableObject {
             fxQuietUntil = Date().addingTimeInterval(1.2)
             DyeFlash.quiet(for: 2)
             exp = loaded
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.fxLid(lowering: false) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in self?.fxThaw() }
+            // the plate comes out frozen under its lid: the frost melts off the lid, then the lid comes off
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.fxLid(lowering: false, holdFor: 1.95)
+                self?.fxThaw()
+            }
             selectedWell = nil
             duplicateSource = nil
             validateTool()
@@ -1229,10 +1232,10 @@ extension Store {
     }
 
     /// The plate's lid: lifted off an opened plate, lowered onto a saved one.
-    func fxLid(lowering: Bool) {
+    func fxLid(lowering: Bool, holdFor: Double = 0) {
         let fx = FxCenter.shared
         guard motion, fx.usable else { return }
-        fx.view?.lid(over: fx.plateFrame, grid: fx.gridFrame, cw: fx.cw, ch: fx.ch, lowering: lowering)
+        fx.view?.lid(over: fx.plateFrame, grid: fx.gridFrame, cw: fx.cw, ch: fx.ch, lowering: lowering, holdFor: holdFor)
     }
 
     /// The microscope room on or off; the lights go out (or come back on) panel by panel.
