@@ -489,8 +489,8 @@ struct StainCard: View {
                         level: CGFloat(min(1, vol / 1500)) * 0.75 + 0.15,
                         key: "\(vol)|" + set.primaries.map { "\($0.dilution)" }.joined(separator: ",") + "|"
                             + set.secondaries.map { "\($0.name):\($0.dilution)" }.joined(separator: ","),
-                        motion: store.motion)
-                    .frame(width: 13, height: 26)
+                        motion: store.motion, alive: store.ambient)
+                    .frame(width: 16, height: 32)
                     .help("This stain's mix: blocking buffer with its antibodies and dyes")
                 Text("Volume").foregroundStyle(.secondary)
                 TextField(fmtNum(auto), value: binding.volumeOverride, format: plain)
@@ -556,9 +556,10 @@ struct StainCard: View {
             }
             FridgeButton(secondaries: true, setID: setID)
             PanelStrip(report: report)
-            // picked to paint with: its spectrum
-            if store.tool == .paint(setID), !report.channels.isEmpty {
-                SpectralStrip(channels: report.channels, motion: store.motion)
+            // its spectrum, on every card; picking the stain to paint with plays it (the lasers fire, the
+            // light rises, any overlap glows), and so does changing its dyes
+            if !report.channels.isEmpty {
+                SpectralStrip(channels: report.channels, motion: store.motion, active: store.tool == .paint(setID))
             }
         }
         .textFieldStyle(.roundedBorder)

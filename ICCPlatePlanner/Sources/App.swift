@@ -299,7 +299,7 @@ func decodePlate(_ data: Data) throws -> Experiment {
 }
 
 final class Store: ObservableObject {
-    @Published var exp: Experiment { didSet { recordUndo(oldValue); save(); fxAfterChange(oldValue) } }
+    @Published var exp: Experiment { didSet { recordUndo(oldValue); save(); fxAfterChange(oldValue); syncTubes(oldValue) } }
     @Published var settings: Settings { didSet { save() } }
     @Published var library: Library { didSet { save() } }
     @Published var tool: Tool = .erase {
@@ -382,6 +382,11 @@ final class Store: ObservableObject {
     private var restoring = false
     var undoGrouping: TimeInterval = 0.5
     var persist = true
+    /// Tubes edited on a card, waiting to be checked with the manufacturer once typing pauses.
+    fileprivate var recheck: (primaries: [UUID: Antibody], secondaries: [UUID: Secondary]) = ([:], [:])
+    fileprivate var recheckWork: DispatchWorkItem?
+    /// Development: the feature test exercises the fridge sync on a store that does not save.
+    var syncTubesInTests = false
 
     private static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1221,6 +1226,68 @@ extension Store {
         let fx = FxCenter.shared
         guard motion, fx.usable else { return }
         fx.view?.thaw(grid: fx.gridFrame, cw: fx.cw, ch: fx.ch)
+    }
+
+    // MARK: card edits go back to the fridge
+
+    /// An antibody edited on a stain card is saved to the fridge tube it came from: a corrected catalogue
+    /// number, company, RRID, dilution, or a corrected name. The tube is found by the name the row had before
+    /// the edit, so fixing a typo in the name reaches the right tube too. Rows with no tube behind them are
+    /// left alone (they join the fridge on export, as before), and an edit never takes over another tube's name.
+    fileprivate func syncTubes(_ old: Experiment) {
+        guard persist || syncTubesInTests else { return }
+        var lib = library
+        var changed = false, facts: [String] = []
+        for s in exp.sets {
+            guard let o = old.sets.first(where: { $0.id == s.id }), o != s else { continue }
+            for p in s.primaries {
+                guard let op = o.primaries.first(where: { $0.id == p.id }), op != p,
+                      !op.name.trimmingCharacters(in: .whitespaces).isEmpty,
+                      let i = lib.primaries.firstIndex(where: { $0.name == op.name }) else { continue }
+                if p.name != op.name, lib.primaries.contains(where: { $0.name == p.name }) { continue }
+                let tube = lib.primaries[i].id
+                lib.primaries[i] = p
+                lib.primaries[i].id = tube
+                changed = true
+                if p.cat != op.cat || p.company != op.company || p.name != op.name || p.rrid != op.rrid {
+                    recheck.primaries[tube] = lib.primaries[i]
+                    facts.append(p.name)
+                }
+            }
+            for q in s.secondaries {
+                guard let oq = o.secondaries.first(where: { $0.id == q.id }), oq != q,
+                      !oq.name.trimmingCharacters(in: .whitespaces).isEmpty,
+                      let i = lib.secondaries.firstIndex(where: { $0.name == oq.name }) else { continue }
+                if q.name != oq.name, lib.secondaries.contains(where: { $0.name == q.name }) { continue }
+                let tube = lib.secondaries[i].id
+                lib.secondaries[i] = q
+                lib.secondaries[i].id = tube
+                changed = true
+                if q.cat != oq.cat || q.company != oq.company || q.name != oq.name || q.rrid != oq.rrid || q.detail != oq.detail {
+                    recheck.secondaries[tube] = lib.secondaries[i]
+                    facts.append(q.name)
+                }
+            }
+        }
+        guard changed else { return }
+        library = lib
+        guard !facts.isEmpty else { return }
+        // once typing pauses: ask the manufacturer's record again for the corrected tubes, and say so
+        recheckWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let (ps, qs) = self.recheck
+            self.recheck = ([:], [:])
+            for p in ps.values { Registry.shared.check(primary: p, force: true) }
+            for q in qs.values { Registry.shared.check(secondary: q, force: true) }
+            let names = (ps.values.map { $0.name } + qs.values.map { $0.name }).sorted()
+            if let first = names.first, self.persist {
+                self.showToast(names.count == 1 ? "Saved to the fridge: \(first). Checking with the manufacturer." :
+                               "Saved \(names.count) tubes to the fridge. Checking with the manufacturer.", icon: "refrigerator")
+            }
+        }
+        recheckWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
     }
 
     /// Erasing well `w` (stain `id`): the aspirator draws it up.

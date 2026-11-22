@@ -232,6 +232,31 @@ func featureTest(statePath: String?) {
     let painted = s2.exp
     expect(s2.exp.wellCount(s2.exp.sets[0]) == 9, "painting two wells adds two wells")
     expect(s2.undoCount == 1, "one drag is one undo step, however many wells it painted")
+    // a catalogue number corrected on a card is saved to the fridge tube it came from
+    let fz = Store(inMemory: sampleExperiment())
+    fz.syncTubesInTests = true
+    fz.library.primaries = [Antibody(name: "TH (rab)", company: "Merck", cat: "AB15O2", dilution: 1000),
+                            Antibody(name: "FOXA2 (g)", company: "R&D Systems", cat: "AF2400", dilution: 500)]
+    fz.library.secondaries = [Secondary(name: "488 rab", dilution: 500, company: "Thermo Fisher", cat: "A-2l206")]
+    var th = fz.library.primaries[0]; th.id = UUID()
+    var sec = fz.library.secondaries[0]; sec.id = UUID()
+    fz.exp.sets[0].primaries = [th]
+    fz.exp.sets[0].secondaries = [sec]
+    let tubeID = fz.library.primaries[0].id
+    fz.exp.sets[0].primaries[0].cat = "AB152"
+    expect(fz.library.primaries.first { $0.id == tubeID }?.cat == "AB152", "a catalogue number fixed on a card is saved to its fridge tube")
+    fz.exp.sets[0].secondaries[0].cat = "A-21206"
+    expect(fz.library.secondaries[0].cat == "A-21206", "a secondary's catalogue number fixed on a card is saved to its tube")
+    fz.exp.sets[0].primaries[0].name = "TH (rabbit)"
+    expect(fz.library.primaries.first { $0.id == tubeID }?.name == "TH (rabbit)", "a corrected name reaches the same tube")
+    fz.exp.sets[0].primaries[0].name = "FOXA2 (g)"
+    expect(fz.library.primaries.filter { $0.name == "FOXA2 (g)" }.count == 1 && fz.library.primaries.first { $0.id == tubeID }?.name == "TH (rabbit)",
+           "an edit never takes over another tube's name")
+    fz.exp.sets[0].primaries.append(Antibody(name: "", company: "", cat: ""))
+    fz.exp.sets[0].primaries[1].name = "NEW (m)"
+    expect(!fz.library.primaries.contains { $0.name == "NEW (m)" }, "a new row typed on the card is not put in the fridge until export")
+    expect(fz.library.primaries.count == 2, "the fridge keeps the same tubes")
+
     // a quick stroke the system reported as C1 then C5 still paints C2–C4; leaving the plate breaks it
     let sd = Store(inMemory: sampleExperiment())
     sd.tool = .paint(sd.exp.sets[0].id)

@@ -96,11 +96,13 @@ enum Spectra {
     }
 }
 
-/// The picked stain's spectrum, under its card: the lasers fire, each dye's light rises, and where two
-/// would bleed into each other the overlap glows amber, with what to do about it.
+/// A stain's spectrum, on its card: each dye's light, and where two would bleed into each other the overlap
+/// glows amber, with what to do about it. Picking the stain plays it: the lasers fire and the light rises.
 struct SpectralStrip: View {
     let channels: [Channel]
     let motion: Bool
+    /// The stain picked to paint with.
+    let active: Bool
 
     var body: some View {
         let em = Spectra.emissions(channels)
@@ -111,7 +113,7 @@ struct SpectralStrip: View {
                 Spacer(minLength: 0)
                 Text("lasers 405 · 488 · 561 · 640 nm").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            SpectrumView(emissions: em, motion: motion)
+            SpectrumView(emissions: em, motion: motion, active: active)
                 .frame(height: 74)
             Label(advice.text, systemImage: advice.severe ? "exclamationmark.triangle.fill" : (em.count > 1 && !Spectra.overlaps(em).isEmpty ? "info.circle" : "checkmark.circle"))
                 .font(.system(size: 11))
@@ -120,20 +122,23 @@ struct SpectralStrip: View {
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Brand.pale.opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Brand.rule, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(active ? Brand.mid.opacity(0.6) : Brand.rule, lineWidth: 1))
     }
 }
 
 struct SpectrumView: NSViewRepresentable {
     let emissions: [Emission]
     let motion: Bool
+    let active: Bool
     func makeNSView(context: Context) -> SpectrumNSView { SpectrumNSView(frame: .zero) }
-    func updateNSView(_ v: SpectrumNSView, context: Context) { v.show(emissions, motion: motion) }
+    func updateNSView(_ v: SpectrumNSView, context: Context) { v.show(emissions, motion: motion, active: active) }
 }
 
 final class SpectrumNSView: NSView {
     private let space = CALayer(), back = CALayer()
     private var shown: [Emission]?
+    private var shownActive = false
+    /// What to draw, and whether to play it.
     private var wanted: ([Emission], Bool)?
     private var drawn: [CALayer] = []
     private static var backs: [String: CGImage] = [:]
@@ -152,9 +157,14 @@ final class SpectrumNSView: NSView {
     override func layout() { super.layout(); play() }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); play() }
 
-    func show(_ e: [Emission], motion: Bool) {
-        guard e != shown else { return }
-        wanted = (e, motion)
+    /// Drawn still the first time (the window opening stays quiet); played when the stain is picked or its
+    /// dyes change.
+    func show(_ e: [Emission], motion: Bool, active: Bool) {
+        let first = shown == nil && wanted == nil
+        let picked = active && !shownActive
+        shownActive = active
+        guard e != shown || picked else { return }
+        wanted = (e, motion && !first)
         play()
     }
 
@@ -166,9 +176,8 @@ final class SpectrumNSView: NSView {
 
     /// Draws (and plays) once the view has its size and a window.
     private func play() {
-        guard let (e, motion) = wanted, bounds.width > 40, bounds.height > 30, window != nil else { return }
+        guard let (e, animate) = wanted, bounds.width > 40, bounds.height > 30, window != nil else { return }
         wanted = nil
-        let replay = shown != nil
         shown = e
         let size = bounds.size, p = plot
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -212,7 +221,7 @@ final class SpectrumNSView: NSView {
             beam.opacity = 0.3
             space.addSublayer(beam)
             drawn.append(beam)
-            if motion { beam.run(frames("opacity", [0, 0, 1, 0.3], [0, 0.01, 0.2, 1], 0.9), "fire", delay: t) }
+            if animate { beam.run(frames("opacity", [0, 0, 1, 0.3], [0, 0.01, 0.2, 1], 0.9), "fire", delay: t) }
         }
         // the curves
         var lastDone = 0.0
@@ -226,8 +235,8 @@ final class SpectrumNSView: NSView {
             lay(s)
             let at = (fireAt[d.laser] ?? 0.15) + 0.12 + Double(e.firstIndex(of: d) ?? 0) * 0.05
             lastDone = max(lastDone, at + 0.6)
-            if motion {
-                s.run(frames("transform.scale.y", [0, 0, 1.06, 1], [0, 0.01, 0.75, 1], 0.6), "rise", delay: replay ? 0.05 : at)
+            if animate {
+                s.run(frames("transform.scale.y", [0, 0, 1.06, 1], [0, 0.01, 0.75, 1], 0.6), "rise", delay: at)
             }
             // its name over its peak
             let t = CATextLayer()
@@ -241,7 +250,7 @@ final class SpectrumNSView: NSView {
             t.opacity = 1
             space.addSublayer(t)
             drawn.append(t)
-            if motion { t.run(frames("opacity", [0, 0, 1], [0, 0.5, 1], 0.6), "show", delay: replay ? 0.05 : at) }
+            if animate { t.run(frames("opacity", [0, 0, 1], [0, 0.5, 1], 0.6), "show", delay: at) }
         }
         // the overlaps, amber where two dyes would bleed into each other
         for o in Spectra.overlaps(e) {
@@ -257,12 +266,11 @@ final class SpectrumNSView: NSView {
             s.shadowOffset = .zero
             s.shadowPath = path
             lay(s)
-            if motion {
-                s.run(frames("opacity", [0, 0, 1, 0.55, 1, 0.8], [0, 0.01, 0.25, 0.5, 0.75, 1], 1.3), "glow", delay: replay ? 0.3 : lastDone)
-                s.opacity = 0.8
+            s.opacity = 0.8
+            if animate {
+                s.run(frames("opacity", [0, 0, 1, 0.55, 1, 0.8], [0, 0.01, 0.25, 0.5, 0.75, 1], 1.3), "glow", delay: lastDone)
             }
         }
-        if motion && !replay { back.run(frames("opacity", [0, 1], [0, 1], 0.25), "in") }
     }
 
     /// The dark strip: faint gridlines, the visible spectrum along the bottom, the four laser lines dashed,
@@ -435,24 +443,36 @@ final class DeepWellsView: NSView {
 
 // MARK: - The mixing tube
 
-/// A little tube on each stain card holding its mix. When the volume or a dilution changes it fills again in
-/// layers (buffer, then each dye), then swirls them into one.
+/// A little tube on each stain card holding its mix: wisps of each dye swirl through the buffer and specks of
+/// antibody drift up, all the time the app is in front. When the volume or a dilution changes it fills again
+/// in layers (buffer, then each dye) and swirls them into one. The swirl is a few looping Core Animation
+/// layers: the window server moves them, the app does nothing per frame.
 struct MixTube: NSViewRepresentable {
     let dyes: [String]
     let level: CGFloat
     let key: String
     let motion: Bool
+    /// Swirling (the app in front, Animations on).
+    let alive: Bool
     func makeNSView(context: Context) -> MixTubeView { MixTubeView(frame: .zero) }
-    func updateNSView(_ v: MixTubeView, context: Context) { v.show(dyes: dyes, level: level, key: key, motion: motion) }
+    func updateNSView(_ v: MixTubeView, context: Context) { v.show(dyes: dyes, level: level, key: key, motion: motion, alive: alive) }
 }
 
 final class MixTubeView: NSView {
     private let space = CALayer(), glass = CALayer(), liquid = CALayer(), liquidMask = CAShapeLayer()
-    private let mixed = CALayer(), swirl = CALayer()
+    private let mixed = CALayer(), swirl = CALayer(), wispsA = CALayer(), wispsB = CALayer(), shine = CALayer()
+    /// The liquid itself: the wisps and specks stay inside it, below the surface.
+    private let pond = CALayer()
+    private var specks: [CALayer] = []
     private var bands: [CALayer] = []
     private var shownKey: String?
     private var wanted: (dyes: [String], level: CGFloat, key: String, motion: Bool)?
+    private var alive = false
+    /// The liquid as last laid out: its rectangle in the tube, and the dyes in it.
+    private var pool = CGRect.zero
+    private var dyes: [String] = []
     private static let buffer = "DDE8F4"
+    private static var wispPictures: [String: CGImage] = [:]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -461,8 +481,17 @@ final class MixTubeView: NSView {
         space.isGeometryFlipped = true
         layer?.addSublayer(space)
         liquid.mask = liquidMask
-        liquid.addSublayer(mixed)
-        liquid.addSublayer(swirl)
+        pond.masksToBounds = true
+        for l in [mixed, pond, swirl, shine] { liquid.addSublayer(l) }
+        for l in [wispsA, wispsB] { pond.addSublayer(l) }
+        for _ in 0..<4 {
+            let d = CALayer()
+            d.bounds = CGRect(x: 0, y: 0, width: 1.8, height: 1.8)
+            d.cornerRadius = 0.9
+            d.opacity = 0
+            pond.addSublayer(d)
+            specks.append(d)
+        }
         space.addSublayer(liquid)
         space.addSublayer(glass)
     }
@@ -472,10 +501,15 @@ final class MixTubeView: NSView {
     override func layout() { super.layout(); play() }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); play() }
 
-    func show(dyes: [String], level: CGFloat, key: String, motion: Bool) {
-        guard key != shownKey else { return }
-        wanted = (dyes, level, key, motion)
-        play()
+    func show(dyes: [String], level: CGFloat, key: String, motion: Bool, alive: Bool) {
+        let wasAlive = self.alive
+        self.alive = alive && motion
+        if key != shownKey {
+            wanted = (dyes, level, key, motion)
+            play()
+        } else if self.alive != wasAlive {
+            stir()
+        }
     }
 
     private func tubePath(_ r: CGRect) -> CGPath {
@@ -501,6 +535,37 @@ final class MixTubeView: NSView {
         return String(format: "%02X%02X%02X", mix(r1, r0), mix(g1, g0), mix(b1, b0))
     }
 
+    /// Wisps of each dye winding up through the liquid, twice over so the picture loops seamlessly when it
+    /// has moved up by one liquid-height.
+    private static func wisps(_ dyes: [String], width: CGFloat, height: CGFloat, mirrored: Bool) -> CGImage? {
+        let key = dyes.joined(separator: ",") + "|\(Int(width))x\(Int(height))\(mirrored)"
+        if let w = wispPictures[key] { return w }
+        let all = dyes.isEmpty ? ["9FB7D6"] : dyes
+        let w = renderImage(CGSize(width: width, height: height * 2), screenScale) { c in
+            c.setLineCap(.round)
+            for (k, hex) in all.enumerated() {
+                for strand in 0..<1 {
+                    let phase = Double(k) * 2.1 + Double(strand) * 3.3 + (mirrored ? 1.4 : 0)
+                    let amp = width * 0.3
+                    let path = CGMutablePath()
+                    var y: CGFloat = 0
+                    path.move(to: CGPoint(x: width / 2 + CGFloat(sin(phase)) * amp, y: 0))
+                    while y <= height * 2 {
+                        y += 1
+                        let t = Double(y / height) * 2 * .pi
+                        path.addLine(to: CGPoint(x: width / 2 + CGFloat(sin(t + phase)) * amp, y: y))
+                    }
+                    c.saveGState()
+                    c.setShadow(offset: .zero, blur: 2.6, color: cg(hex, 0.7))
+                    c.addPath(path); c.setStrokeColor(cg(hex, 0.5)); c.setLineWidth(1.8); c.strokePath()
+                    c.restoreGState()
+                }
+            }
+        }
+        wispPictures[key] = w
+        return w
+    }
+
     private func play() {
         guard let w = wanted, bounds.width > 6, bounds.height > 10 else { return }
         wanted = nil
@@ -517,17 +582,31 @@ final class MixTubeView: NSView {
             c.addPath(t); c.setFillColor(cg("FFFFFF", 0.18)); c.fillPath()
             c.addPath(t); c.setStrokeColor(cg("5F6B7C", 0.8)); c.setLineWidth(1); c.strokePath()
             c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8)
-            c.move(to: CGPoint(x: b.minX + 3.2, y: b.minY + 3)); c.addLine(to: CGPoint(x: b.minX + 3.2, y: b.maxY - b.width * 0.6)); c.strokePath()
+            c.move(to: CGPoint(x: b.minX + 3.4, y: b.minY + 3)); c.addLine(to: CGPoint(x: b.minX + 3.4, y: b.maxY - b.width * 0.6)); c.strokePath()
         }
         liquid.frame = b
         liquidMask.path = tubePath(inner)
         liquidMask.frame = b
         let top = inner.maxY - inner.height * max(0.15, min(0.92, w.level))
         let height = inner.maxY - top
-        mixed.frame = CGRect(x: inner.minX, y: top, width: inner.width, height: height)
+        pool = CGRect(x: inner.minX, y: top, width: inner.width, height: height)
+        dyes = w.dyes
+        mixed.frame = pool
         mixed.backgroundColor = cg(Self.mixHex(w.dyes))
+        // the meniscus catching the light
+        shine.frame = CGRect(x: pool.minX, y: pool.minY, width: pool.width, height: 1.2)
+        shine.backgroundColor = cg("FFFFFF", 0.7)
+        pond.frame = pool
+        for (l, mirrored) in [(wispsA, false), (wispsB, true)] {
+            l.anchorPoint = CGPoint(x: 0.5, y: 0)
+            l.bounds = CGRect(x: 0, y: 0, width: pool.width, height: pool.height * 2)
+            l.position = CGPoint(x: pool.width / 2, y: -pool.height)
+            l.contents = Self.wisps(w.dyes, width: pool.width, height: pool.height, mirrored: mirrored)
+        }
+        for (k, d) in specks.enumerated() { d.backgroundColor = cg(w.dyes.isEmpty ? "FFFFFF" : w.dyes[k % w.dyes.count]) }
         bands.forEach { $0.removeFromSuperlayer() }
         bands = []
+        stir()
         guard replay else {
             mixed.opacity = 1
             swirl.opacity = 0
@@ -552,9 +631,10 @@ final class MixTubeView: NSView {
             l.run(g, "pour", delay: Double(k) * 0.16)
         }
         let poured = Double(colours.count) * 0.16 + 0.25
-        // then swirled into one
+        // then swirled into one, and the wisps come back
         mixed.opacity = 1
         mixed.run(frames("opacity", [0, 0, 1], [0, 0.01, 1], 0.7), "mix", delay: poured)
+        for l in [wispsA, wispsB] { l.run(frames("opacity", [0, 0, 1], [0, 0.01, 1], 0.9), "back", delay: poured + 0.3) }
         swirl.frame = CGRect(x: inner.minX - 2, y: top, width: inner.width + 4, height: height)
         swirl.contents = renderImage(swirl.bounds.size, screenScale) { c in
             let s = self.swirl.bounds.size
@@ -576,5 +656,54 @@ final class MixTubeView: NSView {
                          frames("transform.scale.x", [1, -1, 1], [0, 0.5, 1], 0.9)]
         sg.duration = 0.9
         swirl.run(sg, "swirl", delay: poured - 0.05)
+    }
+
+    /// The ongoing swirl: two layers of wisps winding up at different speeds, swaying against each other, and
+    /// specks of antibody drifting up. Looping animations the window server runs on its own; removed while
+    /// the app is in the background or Animations is off.
+    private func stir() {
+        guard pool.height > 2 else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let layers = [wispsA, wispsB] + specks
+        guard alive else {
+            for l in layers { l.removeAnimation(forKey: "flow"); l.removeAnimation(forKey: "sway") }
+            wispsA.opacity = 0.5; wispsB.opacity = 0.3
+            for d in specks { d.opacity = 0 }
+            return
+        }
+        let h = pool.height, mid = pool.width / 2
+        wispsA.opacity = 0.6; wispsB.opacity = 0.38
+        for (l, period, sway) in [(wispsA, 5.5, 1.4), (wispsB, 8.0, -1.8)] {
+            // up by one liquid-height, where the picture repeats, over and over
+            let flow = CABasicAnimation(keyPath: "position.y")
+            flow.fromValue = 0
+            flow.toValue = -h
+            flow.duration = period
+            flow.repeatCount = .infinity
+            l.position.y = -h
+            l.add(flow, forKey: "flow")
+            let s = CABasicAnimation(keyPath: "position.x")
+            s.fromValue = mid - CGFloat(sway); s.toValue = mid + CGFloat(sway)
+            s.duration = period * 0.37
+            s.autoreverses = true
+            s.repeatCount = .infinity
+            s.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            l.add(s, forKey: "sway")
+        }
+        for (k, d) in specks.enumerated() {
+            let x = pool.width * CGFloat(0.25 + 0.5 * hash01(k, 91))
+            d.position = CGPoint(x: x, y: h)
+            let g = CAAnimationGroup()
+            let life = 3.2 + 1.3 * hash01(k, 93)
+            g.animations = [frames("position.y", [h - 1, 1], [0, 1], life, .linear),
+                            frames("position.x", [x, x + 1.5, x - 1.5, x], [0, 0.33, 0.66, 1], life),
+                            frames("opacity", [0, 0.95, 0.95, 0], [0, 0.15, 0.8, 1], life)]
+            g.duration = life
+            g.repeatCount = .infinity
+            g.beginTime = CACurrentMediaTime() + Double(k) * 0.9
+            g.fillMode = .backwards
+            d.add(g, forKey: "flow")
+        }
     }
 }

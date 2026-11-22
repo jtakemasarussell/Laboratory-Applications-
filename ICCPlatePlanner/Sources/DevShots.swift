@@ -166,6 +166,10 @@ func fxShot2(_ platePath: String, _ out: String) {
     let cwin = NSWindow(contentRect: NSRect(x: 60, y: 60, width: csize.width, height: csize.height), styleMask: [.titled], backing: .buffered, defer: false)
     cwin.contentView = card
     cwin.orderFrontRegardless()
+    wait(0.6); shot("spectrum-still", cwin)          // drawn still when the card first appears
+    store.tool = .erase
+    wait(0.3)
+    store.tool = .paint(store.exp.sets[0].id)       // picked: it plays
     wait(0.45); shot("spectrum-firing", cwin)
     wait(1.3); shot("spectrum", cwin)
     if !store.exp.sets[0].primaries.isEmpty {
@@ -173,6 +177,8 @@ func fxShot2(_ platePath: String, _ out: String) {
         wait(0.3); shot("mix-pour", cwin)
         wait(0.6); shot("mix-swirl", cwin)
         wait(1.2); shot("mix-done", cwin)
+        wait(0.8); shot("tube-a", cwin)          // the swirl keeps going
+        wait(0.7); shot("tube-b", cwin)
     }
     if !store.exp.sets[0].secondaries.isEmpty {
         let before = store.exp.sets[0].secondaries[0].name
