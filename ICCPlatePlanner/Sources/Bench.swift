@@ -380,7 +380,9 @@ struct SampleTimeline: View {
                 g.stroke(Path { p in p.move(to: CGPoint(x: x0, y: y)); p.addLine(to: CGPoint(x: x1, y: y)) }, with: .color(Brand.rule), lineWidth: 3)
                 g.stroke(Path { p in p.move(to: CGPoint(x: x0, y: y)); p.addLine(to: CGPoint(x: x(today), y: y)) }, with: .color(Brand.mid.opacity(0.55)), lineWidth: 3)
                 // cells, more of them the further along
-                let grown = min(14, 1 + days(day0, min(today, fixed ?? today)) / 3)
+                // none before Day 0: a sample planned for later (or fixed before its Day 0) made this negative,
+                // and a negative count crashed the app
+                let grown = max(0, min(14, 1 + days(day0, min(today, fixed ?? today)) / 3))
                 for i in 0..<grown {
                     let f = CGFloat(i) / CGFloat(max(1, grown - 1))
                     let cx = x0 + 6 + (x(min(today, fixed ?? today)) - x0 - 6) * f

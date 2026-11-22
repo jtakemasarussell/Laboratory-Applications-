@@ -660,9 +660,36 @@ final class Store: ObservableObject {
         validateTool()
     }
 
+    /// The well the drag was last over. When the app is busy for a moment macOS merges the pointer's moves,
+    /// and a quick stroke arrived as A1 then A3 with A2 never reported; the wells in between are filled in.
+    private var dragLast: Int?
+
+    /// The drag is over well `w` (nil: off the plate). Painting, erasing and tagging also take every well
+    /// between it and the last one reported; leaving the plate breaks the trail, so dragging round the
+    /// outside and back in never paints a line across.
+    func dragOver(_ w: Int?) {
+        guard let w, (0..<96).contains(w) else { dragLast = nil; return }
+        if let last = dragLast, last != w {
+            switch tool {
+            case .paint, .erase, .tag:
+                let r0 = last / 12, c0 = last % 12, r1 = w / 12, c1 = w % 12
+                let steps = max(abs(r1 - r0), abs(c1 - c0))
+                if steps > 1 {
+                    for k in 1..<steps {
+                        let r = r0 + Int((Double((r1 - r0) * k) / Double(steps)).rounded())
+                        let c = c0 + Int((Double((c1 - c0) * k) / Double(steps)).rounded())
+                        touch(r * 12 + c)
+                    }
+                }
+            default: break
+            }
+        }
+        dragLast = w
+        touch(w)
+    }
+
     func endDrag() {
-        dragErases = nil; dupDrag = nil
-        FxCenter.shared.view?.pipetteAway()
+        dragErases = nil; dupDrag = nil; dragLast = nil
         commitPaint()
     }
 
@@ -1153,8 +1180,8 @@ extension Store {
         guard motion, fx.usable, let k = exp.sets.firstIndex(where: { $0.id == id }) else { return }
         let hex = fillHex(exp.sets[k], k)
         let dye = panel(exp.sets[k]).channels.first { !$0.fluor.counterstain }?.fluor.hex ?? hex
-        fx.view?.pipette(over: fx.gridFrame, col: w % 12, row: w / 12, cw: fx.cw, ch: fx.ch, hex: dye)
-        fx.view?.drop(at: fx.wellCenter(w), hex: hex, ch: fx.ch)
+        fx.view?.pipetteDispense(at: fx.wellCenter(w), hex: dye, cw: fx.cw, ch: fx.ch)
+        fx.view?.drop(at: fx.wellCenter(w), hex: hex, cw: fx.cw, ch: fx.ch)
         Sounds.pipette()
         let accent = setAccentHex(exp.sets[k], k)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { fx.view?.pop(at: fx.wellCenter(w), fill: hex, accent: accent, cw: fx.cw, ch: fx.ch) }
@@ -1169,8 +1196,11 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
     let store = Store(inMemory: sampleExperiment())
     if let d = try? Data(contentsOf: URL(fileURLWithPath: platePath)), let e = try? decodePlate(d) { store.exp = e }
     store.tool = .erase
-    let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: 1360, height: 900))
-    let win = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1360, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+    var size = NSSize(width: 1360, height: 900)
+    let a0 = CommandLine.arguments
+    if let i = a0.firstIndex(of: "--size"), a0.count > i + 2, let w = Double(a0[i + 1]), let h = Double(a0[i + 2]) { size = NSSize(width: w, height: h) }
+    let host = NSHostingView(rootView: ContentView().environmentObject(store).frame(width: size.width, height: size.height))
+    let win = NSWindow(contentRect: NSRect(x: 40, y: 40, width: size.width, height: size.height), styleMask: [.titled], backing: .buffered, defer: false)
     win.contentView = host
     win.orderFrontRegardless()
     store.appActive = true
@@ -1224,12 +1254,25 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
     if let g = fx.gridAnchor { print("before painting: grid frame", fx.gridFrame, "anchor", g.frame, "in", type(of: g.superview!), "window ok:", g.window === fx.view?.window) }
     print("cards:", fx.cardFrames.count, "first:", fx.cardFrames.values.first ?? .zero)
     print("effects layer:", fx.view?.spaceFrame ?? .zero, "view bounds:", fx.view?.bounds ?? .zero)
+    if let t = TiltModel.current {
+        // what a pointer over the plate does: the plate tilts towards it, then a quick click paints a well
+        print("flat: grid frame", fx.gridFrame)
+        t.x = 0.9; t.y = 0.9; t.lit = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        print("tilted: grid frame", fx.gridFrame)
+        store.touch(30); store.endDrag()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.22))
+        shot("tilted")
+        t.x = 0; t.y = 0; t.lit = false
+        store.exp.wells[30] = nil
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        print("flat again: grid frame", fx.gridFrame)
+    }
     for (n, w) in (84..<90).enumerated() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12 * Double(n)) { store.touch(w) }
     }
     RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     shot("pipette")
-    print("first pass, row H:", fx.view?.pipetteDebug ?? "", "· expected row centre y", fx.gridFrame.minY + 7.5 * fx.ch)
     store.endDrag()
     // a second pass straight after: row D, columns 5–10, with another stain
     RunLoop.main.run(until: Date().addingTimeInterval(0.25))

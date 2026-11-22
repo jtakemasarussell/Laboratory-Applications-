@@ -691,6 +691,15 @@ struct PlateSection: View {
                         }
                     }
                     TiltPlate(on: store.motion, model: tilt, hover: hover) { plateBody }
+                        // The marker the effects aim at sits outside the tilt, over where the grid lies flat
+                        // (plateBody's padding, then the row letters; the column numbers and their gap).
+                        // Inside the tilt, AppKit reported it hundreds of points away while the plate leaned
+                        // towards the pointer, so a quick click played its effects over the toolbar.
+                        .background(alignment: .topLeading) {
+                            Color.clear.frame(width: 12 * cw, height: 8 * ch)
+                                .fxGrid()
+                                .padding(.leading, 6 + letterW).padding(.top, 8 + 14 + 4)
+                        }
                 }
             }
 
@@ -871,15 +880,13 @@ struct PlateGrid: View {
                           hex: spot.flatMap { id in sets.firstIndex { $0.id == id } }.map { setAccentHex(sets[$0], $0) } ?? "4A78B8",
                           cw: cw, ch: ch, motion: store.motion)
                     .allowsHitTesting(false))
-        .fxGrid()
         .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch))
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { v in
                     let j = Int(floor(v.location.x / cw)), i = Int(floor(v.location.y / ch))
-                    guard (0..<12).contains(j), (0..<8).contains(i) else { return }
-                    store.touch(i * 12 + j)
+                    store.dragOver((0..<12).contains(j) && (0..<8).contains(i) ? i * 12 + j : nil)
                 }
                 .onEnded { _ in store.endDrag() }
         )

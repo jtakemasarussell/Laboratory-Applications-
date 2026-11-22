@@ -6,8 +6,8 @@ import QuartzCore
 //
 // One transparent layer over the whole window carries the effects that travel between views: antibodies
 // flying from a stain's card to its wells, frost melting off a plate that has just been opened, a red
-// alarm running through the wells of a stain whose pairing has gone wrong, and a multichannel pipette
-// dispensing into the wells as you paint. Every effect is a one-shot Core Animation animation handed to
+// alarm running through the wells of a stain whose pairing has gone wrong, and a pipette the size of a
+// well over each well as you paint it. Every effect is a one-shot Core Animation animation handed to
 // the window server, so nothing in the app redraws per frame, and they are all off with Animations.
 
 /// Where things are on screen, in the window's (top-down) coordinates. Kept up to date by the views
@@ -116,8 +116,6 @@ private func frames(_ path: String, _ values: [Any], _ times: [Double], _ d: Dou
 
 final class FxView: NSView {
     private static var images: [String: CGImage?] = [:]
-    private let pipette = CALayer()
-    private var pipetteHex = ""
     /// Everything is drawn in this layer, laid out top-down like the SwiftUI views. (AppKit resets the
     /// flip on a view's own layer, which turned every effect upside down; a sublayer keeps it.)
     private let space = CALayer()
@@ -128,9 +126,6 @@ final class FxView: NSView {
         wantsLayer = true
         space.isGeometryFlipped = true
         layer?.addSublayer(space)
-        pipette.opacity = 0
-        pipette.anchorPoint = CGPoint(x: 0.5, y: 0)
-        space.addSublayer(pipette)
     }
 
     override func layout() {
@@ -144,9 +139,6 @@ final class FxView: NSView {
         space.frame = bounds
         CATransaction.commit()
     }
-
-    /// Development: where the pipette is, in the drawing layer.
-    var pipetteDebug: String { "root flipped: \(layer?.isGeometryFlipped ?? false) · drawing layer flipped: \(space.isGeometryFlipped), effective top-down: \(space.contentsAreFlipped()) · pipette frame \(pipette.frame) anchor \(pipette.anchorPoint) position \(pipette.position) along row: \(lyingAlongRow)" }
 
     /// Development: the drawing layer's size against the view's.
     var spaceFrame: CGRect { space.frame }
@@ -390,129 +382,97 @@ final class FxView: NSView {
         }
     }
 
-    // MARK: the multichannel pipette while painting
+    // MARK: a pipette the size of a well, over the well being painted
 
-    /// The 8-channel pipette over column `col` (tips over every row); `row` is the one dispensing.
-    /// The well painted just before, to tell which way the drag runs; and which way the pipette lies now.
-    private var lastCell: (col: Int, row: Int)?
-    private var lyingAlongRow = true
-    private var shownAlongRow: Bool?
+    /// The pipette showing now: one at a time, so it hops from well to well as the drag runs.
+    private weak var lastPipette: CALayer?
 
-    /// The multichannel over the wells being painted. It lies the way the drag runs: along a row (a tip over
-    /// each column of that row) or down a column (a tip over each row of that column).
-    func pipette(over grid: CGRect, col: Int, row: Int, cw: CGFloat, ch: CGFloat, hex: String) {
-        if let last = lastCell, pipette.opacity > 0 {
-            if last.row == row && last.col != col { lyingAlongRow = true }
-            else if last.col == col && last.row != row { lyingAlongRow = false }
-        }
-        lastCell = (col, row)
-        let along = lyingAlongRow
-        let x = grid.minX + (CGFloat(col) + 0.5) * cw, y = grid.minY + (CGFloat(row) + 0.5) * ch
-        let place = along ? CGPoint(x: grid.minX - 64, y: y) : CGPoint(x: x, y: grid.minY - 64)
-        CATransaction.begin()
-        if pipette.opacity == 0 || shownAlongRow != along || hex != pipetteHex {
-            CATransaction.setDisableActions(true)
-            let size = along ? CGSize(width: grid.width + 66, height: 46) : CGSize(width: 46, height: grid.height + 66)
-            pipette.anchorPoint = along ? CGPoint(x: 0, y: 0.5) : CGPoint(x: 0.5, y: 0)
-            pipette.bounds = CGRect(origin: .zero, size: size)
-            pipette.position = place
-            pipette.contents = along
-                ? Self.image("pipH\(hex)\(Int(cw))x\(Int(grid.width))", size) { c in Self.drawPipetteAlongRow(c, size: size, cw: cw, hex: hex) }
-                : Self.image("pipV\(hex)\(Int(ch))x\(Int(grid.height))", size) { c in Self.drawPipette(c, size: size, ch: ch, hex: hex) }
-            if pipette.opacity == 0 {
-                pipette.removeAnimation(forKey: "out")
-                pipette.run(frames("opacity", [0, 0.92], [0, 1], 0.18), "in")
-                pipette.opacity = 0.92
-            }
-            shownAlongRow = along
-            pipetteHex = hex
-        } else {
-            CATransaction.setAnimationDuration(0.12)
-            pipette.position = place
-        }
-        CATransaction.commit()
-    }
+    /// The well's own box (the same box the stain pops into), centred on the well.
+    static func wellBox(cw: CGFloat, ch: CGFloat) -> CGSize { CGSize(width: cw - 5, height: ch - 5) }
 
-    /// The pipette lying along a row: the head on the left, the manifold across the plate, and a tip centred
-    /// over each of the twelve wells of the row.
-    private static func drawPipetteAlongRow(_ c: CGContext, size: CGSize, cw: CGFloat, hex: String) {
-        let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        let mid = size.height / 2
-        let gridLeft: CGFloat = 64                        // the grid's left edge in this picture
-        c.setFillColor(cg("C9D2DE", 0.95)); c.fill(CGRect(x: 2, y: mid - 3.5, width: 14, height: 7))
-        let head = CGRect(x: 14, y: mid - 14, width: 34, height: 28)
-        c.saveGState()
-        c.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: cg("000000", 0.35))
-        c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.setFillColor(cg("B7C2D0")); c.fillPath()
-        c.restoreGState()
-        c.saveGState(); c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.clip()
-        if let g = CGGradient(colorsSpace: space, colors: [cg("F4F7FA"), cg("C3CCD8"), cg("8F9BAC")] as CFArray, locations: [0, 0.55, 1]) {
-            c.drawLinearGradient(g, start: CGPoint(x: 0, y: head.minY), end: CGPoint(x: 0, y: head.maxY), options: [])
-        }
-        c.restoreGState()
-        c.setFillColor(cg(hex)); c.fill(CGRect(x: 22, y: mid - 9, width: 4, height: 18))      // the colour band
-        let bar = CGRect(x: head.maxX - 2, y: mid - 5, width: gridLeft + 12 * cw - head.maxX - cw * 0.5 + 2, height: 10)
-        let barPath = CGPath(roundedRect: bar, cornerWidth: 5, cornerHeight: 5, transform: nil)
-        c.saveGState(); c.addPath(barPath); c.clip()
-        if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.55), cg("DDE4EC", 0.35), cg("FFFFFF", 0.5)] as CFArray, locations: [0, 0.5, 1]) {
-            c.drawLinearGradient(g, start: CGPoint(x: 0, y: bar.minY), end: CGPoint(x: 0, y: bar.maxY), options: [])
-        }
-        c.restoreGState()
-        c.addPath(barPath); c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8); c.strokePath()
-        for j in 0..<12 {
-            let x = gridLeft + (CGFloat(j) + 0.5) * cw
-            let nub = CGRect(x: x - 4, y: mid - 4, width: 8, height: 8)
-            c.setFillColor(cg("F6F9FC", 0.95)); c.fillEllipse(in: nub)
-            c.setStrokeColor(cg("8E9CAE", 0.9)); c.setLineWidth(0.8); c.strokeEllipse(in: nub)
-            c.setFillColor(cg(hex)); c.fillEllipse(in: nub.insetBy(dx: 2.2, dy: 2.2))
-        }
-    }
-
-    /// The pipette, seen from above: a head with its plunger and colour band, one frosted manifold running
-    /// down the column, and a small tip centred over each of the eight wells, holding a bead of the stain.
-    private static func drawPipette(_ c: CGContext, size: CGSize, ch: CGFloat, hex: String) {
-        let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        let mid = size.width / 2
-        let gridTop: CGFloat = 64                         // the grid's top edge in this picture
-        // plunger and head
-        c.setFillColor(cg("C9D2DE", 0.95)); c.fill(CGRect(x: mid - 3.5, y: 2, width: 7, height: 14))
-        let head = CGRect(x: mid - 14, y: 14, width: 28, height: 34)
-        c.saveGState()
-        c.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: cg("000000", 0.35))
-        c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.setFillColor(cg("B7C2D0")); c.fillPath()
-        c.restoreGState()
-        c.saveGState(); c.addPath(CGPath(roundedRect: head, cornerWidth: 7, cornerHeight: 7, transform: nil)); c.clip()
-        if let g = CGGradient(colorsSpace: space, colors: [cg("F4F7FA"), cg("C3CCD8"), cg("8F9BAC")] as CFArray, locations: [0, 0.55, 1]) {
-            c.drawLinearGradient(g, start: CGPoint(x: head.minX, y: 0), end: CGPoint(x: head.maxX, y: 0), options: [])
-        }
-        c.restoreGState()
-        c.setFillColor(cg(hex)); c.fill(CGRect(x: mid - 9, y: 22, width: 18, height: 4))     // the colour band
-        // one manifold, from the head to the last well, frosted and see-through
-        let bar = CGRect(x: mid - 5, y: head.maxY - 2, width: 10, height: gridTop + 8 * ch - head.maxY - ch * 0.5 + 2)
-        let barPath = CGPath(roundedRect: bar, cornerWidth: 5, cornerHeight: 5, transform: nil)
-        c.saveGState(); c.addPath(barPath); c.clip()
-        if let g = CGGradient(colorsSpace: space, colors: [cg("FFFFFF", 0.55), cg("DDE4EC", 0.35), cg("FFFFFF", 0.5)] as CFArray, locations: [0, 0.5, 1]) {
-            c.drawLinearGradient(g, start: CGPoint(x: bar.minX, y: 0), end: CGPoint(x: bar.maxX, y: 0), options: [])
-        }
-        c.restoreGState()
-        c.addPath(barPath); c.setStrokeColor(cg("FFFFFF", 0.7)); c.setLineWidth(0.8); c.strokePath()
-        // a tip nub centred over each well, with a bead of stain
-        for i in 0..<8 {
-            let y = gridTop + (CGFloat(i) + 0.5) * ch
-            let nub = CGRect(x: mid - 4, y: y - 4, width: 8, height: 8)
-            c.setFillColor(cg("F6F9FC", 0.95)); c.fillEllipse(in: nub)
-            c.setStrokeColor(cg("8E9CAE", 0.9)); c.setLineWidth(0.8); c.strokeEllipse(in: nub)
-            c.setFillColor(cg(hex)); c.fillEllipse(in: nub.insetBy(dx: 2.2, dy: 2.2))
-        }
-    }
-
-    /// A drop from the tip over `well` into it.
-    func drop(at p: CGPoint, hex: String, ch: CGFloat) {
+    /// A pipette drawn inside the box of the well being painted, centred on the well exactly like the stain's
+    /// pop, so it cannot sit over a neighbouring row or column. It settles in, dispenses (the drop falls from
+    /// its tip) and fades; the next well's pipette takes over and this one goes at once.
+    func pipetteDispense(at p: CGPoint, hex: String, cw: CGFloat, ch: CGFloat) {
         let root = space
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
+        if let old = lastPipette {
+            let o = old.presentation()?.opacity ?? 0
+            old.removeAllAnimations()
+            old.opacity = 0
+            if o > 0.01 { old.run(frames("opacity", [o, 0], [0, 1], 0.08), "out") }
+        }
+        let box = Self.wellBox(cw: cw, ch: ch)
+        let l = CALayer()
+        l.bounds = CGRect(origin: .zero, size: box)
+        l.contents = Self.image("pipWell\(hex)\(Int(box.width))x\(Int(box.height))", box) { c in
+            Self.drawWellPipette(c, size: box, hex: hex)
+        }
+        l.position = p
+        l.zPosition = 10                                  // above the stain's pop, which arrives after it
+        l.opacity = 0
+        root.addSublayer(l)
+        let g = CAAnimationGroup()
+        g.animations = [frames("position.y", [p.y - 3, p.y, p.y, p.y - 2], [0, 0.22, 0.7, 1], 0.55),
+                        frames("opacity", [0, 1, 1, 0], [0, 0.16, 0.7, 1], 0.55)]
+        g.duration = 0.55
+        l.run(g, "pipette")
+        lastPipette = l
+        expire(l, after: 0.62)
+    }
+
+    /// Where the pipette's tip is, below the well's centre, as a fraction of the box's height.
+    private static let tipBelowCentre: CGFloat = 0.22
+
+    /// A single-channel pipette seen from the side, drawn in a well's box from its top edge to three quarters down: plunger, a
+    /// metal body with the stain's colour band, and a frosted tip, outlined so it shows on a pale well too.
+    private static func drawWellPipette(_ c: CGContext, size: CGSize, hex: String) {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let u = size.height / 40                          // drawn for a 40-pt-tall box, scaled
+        let mid = size.width / 2
+        let tipY = size.height * (0.5 + tipBelowCentre)
+        // plunger
+        let plunger = CGRect(x: mid - 3 * u, y: 0.8 * u, width: 6 * u, height: 4.6 * u)
+        c.addPath(CGPath(roundedRect: plunger, cornerWidth: 1.6 * u, cornerHeight: 1.6 * u, transform: nil))
+        c.setFillColor(cg("D5DCE5")); c.fillPath()
+        c.addPath(CGPath(roundedRect: plunger, cornerWidth: 1.6 * u, cornerHeight: 1.6 * u, transform: nil))
+        c.setStrokeColor(cg("5F6B7C", 0.85)); c.setLineWidth(0.8 * u); c.strokePath()
+        // body, shaded like a metal cylinder
+        let body = CGRect(x: mid - 6.8 * u, y: 5 * u, width: 13.6 * u, height: 14 * u)
+        let bodyPath = CGPath(roundedRect: body, cornerWidth: 3.5 * u, cornerHeight: 3.5 * u, transform: nil)
+        c.saveGState()
+        c.setShadow(offset: CGSize(width: 0, height: 1.2 * u), blur: 2.5 * u, color: cg("000000", 0.35))
+        c.addPath(bodyPath); c.setFillColor(cg("B7C2D0")); c.fillPath()
+        c.restoreGState()
+        c.saveGState(); c.addPath(bodyPath); c.clip()
+        if let g = CGGradient(colorsSpace: space, colors: [cg("8F9BAC"), cg("F4F7FA"), cg("C3CCD8"), cg("7D899B")] as CFArray, locations: [0, 0.35, 0.65, 1]) {
+            c.drawLinearGradient(g, start: CGPoint(x: body.minX, y: 0), end: CGPoint(x: body.maxX, y: 0), options: [])
+        }
+        c.setFillColor(cg(hex)); c.fill(CGRect(x: body.minX, y: 9.4 * u, width: body.width, height: 3.4 * u))   // the colour band
+        c.restoreGState()
+        c.addPath(bodyPath); c.setStrokeColor(cg("5F6B7C", 0.85)); c.setLineWidth(0.8 * u); c.strokePath()
+        // the frosted tip, narrowing to the point, holding a bead of the stain
+        let cone = CGMutablePath()
+        cone.move(to: CGPoint(x: mid - 4.6 * u, y: body.maxY - 0.5 * u))
+        cone.addLine(to: CGPoint(x: mid + 4.6 * u, y: body.maxY - 0.5 * u))
+        cone.addLine(to: CGPoint(x: mid + 0.9 * u, y: tipY))
+        cone.addLine(to: CGPoint(x: mid - 0.9 * u, y: tipY))
+        cone.closeSubpath()
+        c.addPath(cone); c.setFillColor(cg("F3F6FA", 0.95)); c.fillPath()
+        c.setFillColor(cg(hex, 0.95))
+        c.fillEllipse(in: CGRect(x: mid - 1.8 * u, y: tipY - 6 * u, width: 3.6 * u, height: 3.6 * u))
+        c.addPath(cone); c.setStrokeColor(cg("5F6B7C", 0.85)); c.setLineWidth(0.8 * u); c.strokePath()
+    }
+
+    /// A drop from the pipette's tip over the well at `p`, into the well.
+    func drop(at p: CGPoint, hex: String, cw: CGFloat, ch: CGFloat) {
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let box = Self.wellBox(cw: cw, ch: ch)
         let d = CALayer()
-        d.bounds = CGRect(x: 0, y: 0, width: 8, height: 10)
+        d.bounds = CGRect(x: 0, y: 0, width: 6, height: 7.5)
         d.contents = Self.image("drop" + hex, CGSize(width: 8, height: 10)) { c in
             c.move(to: CGPoint(x: 4, y: 0))
             c.addQuadCurve(to: CGPoint(x: 8, y: 6.5), control: CGPoint(x: 8, y: 3))
@@ -521,15 +481,17 @@ final class FxView: NSView {
             c.setFillColor(cg(hex)); c.fillPath()
             c.setFillColor(NSColor(white: 1, alpha: 0.7).cgColor); c.fillEllipse(in: CGRect(x: 2.2, y: 4.5, width: 1.6, height: 2))
         }
-        d.position = p
+        let from = p.y + box.height * Self.tipBelowCentre + 2, to = p.y + box.height * 0.5 - 4
+        d.position = CGPoint(x: p.x, y: to)
+        d.zPosition = 11
         d.opacity = 0
         root.addSublayer(d)
         let g = CAAnimationGroup()
-        g.animations = [frames("position.y", [p.y - ch * 0.42, p.y], [0, 1], 0.22, .easeIn),
-                        frames("opacity", [1, 1, 0], [0, 0.85, 1], 0.22)]
-        g.duration = 0.22
+        g.animations = [frames("position.y", [from, from, to], [0, 0.35, 1], 0.3, .easeIn),
+                        frames("opacity", [0, 1, 1, 0], [0, 0.3, 0.8, 1], 0.3)]
+        g.duration = 0.3
         d.run(g, "fall")
-        expire(d, after: 0.3)
+        expire(d, after: 0.36)
     }
 
     /// A painted well: the stain pops into it, and a ring spreads out from it.
@@ -553,15 +515,6 @@ final class FxView: NSView {
         l.run(g, "pop")
         expire(l, after: 0.4)
         ripple(at: p, hex: accent, delay: 0.05, size: max(cw, ch) - 6)
-    }
-
-    func pipetteAway() {
-        lastCell = nil
-        guard pipette.opacity > 0 else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        pipette.run(frames("opacity", [0.92, 0], [0, 1], 0.35), "out")
-        pipette.opacity = 0
-        CATransaction.commit()
     }
 }
 

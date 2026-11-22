@@ -231,15 +231,27 @@ func featureTest(statePath: String?) {
     s2.touch(50); s2.touch(51); s2.endDrag()
     let painted = s2.exp
     expect(s2.exp.wellCount(s2.exp.sets[0]) == 9, "painting two wells adds two wells")
+    expect(s2.undoCount == 1, "one drag is one undo step, however many wells it painted")
+    // a quick stroke the system reported as C1 then C5 still paints C2–C4; leaving the plate breaks it
+    let sd = Store(inMemory: sampleExperiment())
+    sd.tool = .paint(sd.exp.sets[0].id)
+    for w in 0..<96 { sd.exp.wells[w] = nil }
+    sd.dragOver(24); sd.dragOver(28); sd.endDrag()
+    expect((24...28).allSatisfy { sd.exp.wells[$0] == sd.exp.sets[0].id }, "a fast stroke paints every well it crossed")
+    sd.dragOver(36); sd.dragOver(nil); sd.dragOver(40); sd.endDrag()
+    expect(sd.exp.wells[36] != nil && sd.exp.wells[40] != nil && (37...39).allSatisfy { sd.exp.wells[$0] == nil },
+           "leaving the plate mid-drag doesn't paint a line back across it")
+    sd.dragOver(0); sd.dragOver(27); sd.endDrag()
+    expect(sd.exp.wells[13] != nil && sd.exp.wells[27] != nil, "a diagonal stroke paints the wells along it")
     s2.clearPlate()
     expect(s2.exp.totalStainedWells == 0, "clear plate empties the plate")
     s2.undo()
     expect(s2.exp == painted, "undo brings back a cleared plate")
     s2.undo(); s2.undo()
     expect(s2.exp == start, "undoing every step returns to the starting plate")
-    expect(s2.undoCount == 0 && s2.redoCount == 3, "undo and redo counts are right")
-    s2.redo(); s2.redo()
-    expect(s2.exp == painted, "redo re-applies the steps")
+    expect(s2.undoCount == 0 && s2.redoCount == 2, "undo and redo counts are right")
+    s2.redo()
+    expect(s2.exp == painted, "redo re-applies the step")
     s2.exp.samples[0].name = "changed"
     expect(s2.redoCount == 0, "a new edit discards the redo history")
     let setID = s2.exp.sets[1].id
