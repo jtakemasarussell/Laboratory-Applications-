@@ -199,7 +199,7 @@ struct FridgeRack: View {
                             tube(t)
                                 .offset(y: opened.wrappedValue ? 0 : 18)
                                 .opacity(opened.wrappedValue ? 1 : 0)
-                                .animation(motion ? .spring(response: 0.6, dampingFraction: 0.8).delay(0.75 + Double(min(k, 17)) * 0.045) : nil,
+                                .animation(motion ? .spring(response: 0.7, dampingFraction: 0.82).delay(1.0 + Double(min(k, 17)) * 0.05) : nil,
                                            value: opened.wrappedValue)
                         }
                     }

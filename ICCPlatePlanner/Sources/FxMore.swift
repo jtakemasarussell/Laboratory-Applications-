@@ -642,10 +642,10 @@ final class FridgeDoorView: NSView {
         clip.sublayerTransform = persp
         clip.addSublayer(door)
         // a moment closed, the seal giving, then the door swings wide
-        let d = 1.25
+        let d = 1.6
         let open = CAAnimationGroup()
-        open.animations = [frames("transform.rotation.y", [0, 0, -0.08, -1.75], [0, 0.18, 0.28, 1], d, .easeInEaseOut),
-                           frames("opacity", [1, 1, 1, 1, 0], [0, 0.18, 0.28, 0.8, 1], d)]
+        open.animations = [frames("transform.rotation.y", [0, 0, -0.08, -1.75], [0, 0.14, 0.24, 1], d, .easeInEaseOut),
+                           frames("opacity", [1, 1, 1, 1, 0], [0, 0.14, 0.24, 0.82, 1], d)]
         open.duration = d
         door.run(open, "open")
         // mist rolling out from the opening edge
@@ -660,15 +660,16 @@ final class FridgeDoorView: NSView {
             root.addSublayer(m)
             let g = CAAnimationGroup()
             let drift = CGFloat(hash01(k, 13) - 0.5) * 50
-            g.animations = [frames("transform.scale", [0.6, 2.2], [0, 1], 1.9, .easeOut),
-                            frames("opacity", [0, 0.85, 0], [0, 0.25, 1], 1.9),
-                            frames("position", [NSValue(point: CGPoint(x: x, y: y)), NSValue(point: CGPoint(x: x + drift, y: y + 26))], [0, 1], 1.9, .easeOut)]
-            g.duration = 1.9
-            m.run(g, "mist", delay: 0.3 + Double(k) * 0.035)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { m.removeFromSuperlayer() }
+            let life = 2.6
+            g.animations = [frames("transform.scale", [0.6, 2.3], [0, 1], life, .easeOut),
+                            frames("opacity", [0, 0.85, 0.5, 0], [0, 0.22, 0.6, 1], life),
+                            frames("position", [NSValue(point: CGPoint(x: x, y: y)), NSValue(point: CGPoint(x: x + drift, y: y + 30))], [0, 1], life, .easeOut)]
+            g.duration = life
+            m.run(g, "mist", delay: 0.4 + Double(k) * 0.045)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) { m.removeFromSuperlayer() }
         }
         CATransaction.commit()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35) { clip.removeFromSuperlayer() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { clip.removeFromSuperlayer() }
     }
 
     /// Frosted white-blue panel with an inner gasket and a long handle on the right.
