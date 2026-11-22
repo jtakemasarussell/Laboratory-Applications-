@@ -596,10 +596,13 @@ struct FridgeDoor: NSViewRepresentable {
 final class FridgeDoorView: NSView {
     var motion = true
     private var ran = false
-    private static var puff: CGImage? = renderImage(CGSize(width: 70, height: 70), screenScale) { c in
+    /// One wisp of mist: wide and faint, so a few overlapping read as a cloud rather than as balls.
+    private static var puff: CGImage? = renderImage(CGSize(width: 120, height: 90), screenScale) { c in
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        if let g = CGGradient(colorsSpace: space, colors: [cg("F4FBFF", 0.75), cg("DDF0FF", 0.3), cg("DDF0FF", 0)] as CFArray, locations: [0, 0.5, 1]) {
-            c.drawRadialGradient(g, startCenter: CGPoint(x: 35, y: 35), startRadius: 0, endCenter: CGPoint(x: 35, y: 35), endRadius: 35, options: [])
+        c.scaleBy(x: 1, y: 0.75)
+        if let g = CGGradient(colorsSpace: space, colors: [cg("F4FBFF", 0.42), cg("DDF0FF", 0.2), cg("DDF0FF", 0.06), cg("DDF0FF", 0)] as CFArray,
+                              locations: [0, 0.35, 0.7, 1]) {
+            c.drawRadialGradient(g, startCenter: CGPoint(x: 60, y: 60), startRadius: 0, endCenter: CGPoint(x: 60, y: 60), endRadius: 60, options: [])
         }
     }
 
@@ -638,15 +641,17 @@ final class FridgeDoorView: NSView {
         persp.m34 = -1 / 700
         clip.sublayerTransform = persp
         clip.addSublayer(door)
+        // a moment closed, the seal giving, then the door swings wide
+        let d = 1.25
         let open = CAAnimationGroup()
-        open.animations = [frames("transform.rotation.y", [0, 0, -1.75], [0, 0.15, 1], 0.55, .easeIn),
-                           frames("opacity", [1, 1, 1, 0], [0, 0.15, 0.75, 1], 0.55)]
-        open.duration = 0.55
+        open.animations = [frames("transform.rotation.y", [0, 0, -0.08, -1.75], [0, 0.18, 0.28, 1], d, .easeInEaseOut),
+                           frames("opacity", [1, 1, 1, 1, 0], [0, 0.18, 0.28, 0.8, 1], d)]
+        open.duration = d
         door.run(open, "open")
         // mist rolling out from the opening edge
-        for k in 0..<9 {
+        for k in 0..<16 {
             let m = CALayer()
-            m.bounds = CGRect(x: 0, y: 0, width: 70, height: 70)
+            m.bounds = CGRect(x: 0, y: 0, width: 120, height: 90)
             m.contents = Self.puff
             let y = b.height * (0.1 + 0.8 * CGFloat(hash01(k, 7)))
             let x = b.width * (0.15 + 0.7 * CGFloat(hash01(k, 11)))
@@ -655,15 +660,15 @@ final class FridgeDoorView: NSView {
             root.addSublayer(m)
             let g = CAAnimationGroup()
             let drift = CGFloat(hash01(k, 13) - 0.5) * 50
-            g.animations = [frames("transform.scale", [0.4, 1.9], [0, 1], 1.0, .easeOut),
-                            frames("opacity", [0, 0.8, 0], [0, 0.25, 1], 1.0),
-                            frames("position", [NSValue(point: CGPoint(x: x, y: y)), NSValue(point: CGPoint(x: x + drift, y: y + 22))], [0, 1], 1.0, .easeOut)]
-            g.duration = 1.0
-            m.run(g, "mist", delay: 0.12 + Double(k) * 0.03)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { m.removeFromSuperlayer() }
+            g.animations = [frames("transform.scale", [0.6, 2.2], [0, 1], 1.9, .easeOut),
+                            frames("opacity", [0, 0.85, 0], [0, 0.25, 1], 1.9),
+                            frames("position", [NSValue(point: CGPoint(x: x, y: y)), NSValue(point: CGPoint(x: x + drift, y: y + 26))], [0, 1], 1.9, .easeOut)]
+            g.duration = 1.9
+            m.run(g, "mist", delay: 0.3 + Double(k) * 0.035)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { m.removeFromSuperlayer() }
         }
         CATransaction.commit()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { clip.removeFromSuperlayer() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35) { clip.removeFromSuperlayer() }
     }
 
     /// Frosted white-blue panel with an inner gasket and a long handle on the right.
@@ -812,11 +817,50 @@ final class DyeGlowView: NSView {
         text.fontSize = 9.5
         text.foregroundColor = cg("FFFFFF")
         text.contentsScale = screenScale
+        // a new dye replaces the old one at once: by default the layers cross-fade their old picture into the
+        // new one, which showed the last dye's name ghosting under the new one
+        for l in [halo, fill, text] { l.actions = ["contents": NSNull(), "string": NSNull()] }
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     private var pending: (hex: String, label: String)?
+    /// How far the glow reaches beyond the tag.
+    private static let bloom: CGFloat = 12
+    private static var pictures: [String: CGImage] = [:]
+
+    private static func picture(_ key: String, _ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
+        if let i = pictures[key] { return i }
+        let i = renderImage(size, screenScale, draw)
+        pictures[key] = i
+        return i
+    }
+
+    /// Two passes of blurred colour: a wide faint bloom and a tighter bright one hugging the tag.
+    private static func drawBloom(_ c: CGContext, tag: CGRect, hex: String) {
+        let shape = CGPath(roundedRect: tag, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        for (blur, alpha) in [(CGFloat(11), CGFloat(0.75)), (CGFloat(5), CGFloat(0.9))] {
+            c.saveGState()
+            c.setShadow(offset: .zero, blur: blur, color: cg(hex, alpha))
+            c.addPath(shape); c.setFillColor(cg(hex, alpha)); c.fillPath()
+            c.restoreGState()
+        }
+    }
+
+    /// The tag lit up: its dye colour with a soft white sheen across the top and a bright rim.
+    private static func drawLit(_ c: CGContext, size: CGSize, hex: String) {
+        let r = CGRect(origin: .zero, size: size)
+        let shape = CGPath(roundedRect: r, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        c.addPath(shape); c.setFillColor(cg(hex)); c.fillPath()
+        c.saveGState(); c.addPath(shape); c.clip()
+        if let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              colors: [cg("FFFFFF", 0.42), cg("FFFFFF", 0.08), cg("FFFFFF", 0)] as CFArray, locations: [0, 0.5, 1]) {
+            c.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+        }
+        c.restoreGState()
+        c.addPath(CGPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 3.5, cornerHeight: 3.5, transform: nil))
+        c.setStrokeColor(cg("FFFFFF", 0.55)); c.setLineWidth(1); c.strokePath()
+    }
 
     func update(hex: String, label: String, flashes: Int) {
         guard flashes != played else { return }
@@ -836,12 +880,17 @@ final class DyeGlowView: NSView {
         let b = bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
         glow.frame = b
-        halo.frame = b.insetBy(dx: -3.5, dy: -3.5)
-        halo.cornerRadius = 7
-        halo.backgroundColor = cg(hex, 0.35)
+        // the bloom: a soft glow in the dye's colour, blurred once per colour and size and then only faded
+        let r = Self.bloom
+        halo.frame = b.insetBy(dx: -r, dy: -r)
+        halo.contents = Self.picture("b\(hex)\(Int(b.width))x\(Int(b.height))", halo.frame.size) { c in
+            Self.drawBloom(c, tag: CGRect(x: r, y: r, width: b.width, height: b.height), hex: hex)
+        }
+        // the lit tag: the dye's colour, brighter towards the top, like a lit fluorophore
         fill.frame = b
-        fill.cornerRadius = 4
-        fill.backgroundColor = cg(hex)
+        fill.contents = Self.picture("f\(hex)\(Int(b.width))x\(Int(b.height))", b.size) { c in
+            Self.drawLit(c, size: b.size, hex: hex)
+        }
         // where the tag draws its colour bar and its name (5 pt in, a 3 pt bar, 3 pt apart)
         bar.frame = CGRect(x: 5, y: (b.height - 9) / 2, width: 3, height: 9)
         bar.cornerRadius = 1.5
