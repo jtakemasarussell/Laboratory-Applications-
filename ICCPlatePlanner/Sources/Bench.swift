@@ -138,8 +138,10 @@ struct FridgeRack: View {
         guard let k = cardIndex else { return }
         if secondaries, let q = store.library.secondaries.first(where: { $0.id == id }) {
             var n = q; n.id = UUID(); DyeFlash.added(n); store.exp.sets[k].secondaries.append(n); FreezerLog.touch([q.name])
+            store.arrangePairs()                    // straight into place beside its primary
         } else if let p = store.library.primaries.first(where: { $0.id == id }) {
             var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n); FreezerLog.touch([p.name])
+            store.arrangePairs()
         }
         if motion { withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { lifted.wrappedValue = id } }
         close()
@@ -166,13 +168,13 @@ struct FridgeRack: View {
                               cat: opt(fCat.wrappedValue), rrid: opt(fRRID.wrappedValue))
             store.library.secondaries.removeAll { $0.name == name }
             store.library.secondaries.append(q)
-            if toCard, let k = cardIndex { var n = q; n.id = UUID(); DyeFlash.added(n); store.exp.sets[k].secondaries.append(n) }
+            if toCard, let k = cardIndex { var n = q; n.id = UUID(); DyeFlash.added(n); store.exp.sets[k].secondaries.append(n); store.arrangePairs() }
         } else {
             let p = Antibody(name: name, company: fCompany.wrappedValue.trimmingCharacters(in: .whitespaces),
                              cat: fCat.wrappedValue.trimmingCharacters(in: .whitespaces), dilution: dil, rrid: opt(fRRID.wrappedValue))
             store.library.primaries.removeAll { $0.name == name }
             store.library.primaries.append(p)
-            if toCard, let k = cardIndex { var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n) }
+            if toCard, let k = cardIndex { var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n); store.arrangePairs() }
         }
         FreezerLog.touch([name])
         if secondaries { Registry.shared.check(secondary: draftSecondary) } else { Registry.shared.check(primary: draftPrimary) }

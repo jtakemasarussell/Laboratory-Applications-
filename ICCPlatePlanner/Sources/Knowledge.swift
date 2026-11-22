@@ -15,6 +15,7 @@ struct ProductFacts {
     var clonality: String
     var note: String? = nil     // the maker's own caveat, shown as information
     var source: String          // where the facts come from
+    var url: String? = nil      // the product page, when it was read there
 
     var summary: String { "\(maker) \(cat): \(target), \(host) \(clonality)" }
 }
@@ -63,8 +64,10 @@ private let primaryFacts: [ProductFacts] = [
     ProductFacts(maker: "R&D Systems", cat: "AF7388", target: "PITX2", host: "sheep", clonality: "polyclonal IgG",
                  note: "R&D validates AF7388 for IHC.",
                  source: "bio-techne.com AF7388"),
-    ProductFacts(maker: "Abcam", cat: "ab313403", target: "PITX3", host: "rabbit", clonality: "recombinant multiclonal, RP23040049",
-                 source: "abcam.com ab313403 (WB, ICC/IF)"),
+    ProductFacts(maker: "Abcam", cat: "ab313403", target: "PITX3/PTX3", host: "rabbit", clonality: "recombinant multiclonal IgG, clone RP23040049",
+                 note: "Abcam tests ab313403 for ICC/IF on human cells at 1–3 µg/mL; it reacts with human and mouse.",
+                 source: "abcam.com ab313403 (ICC/IF, WB)",
+                 url: "https://www.abcam.com/en-us/products/primary-antibodies/pitx3-ptx3-antibody-rp23040049-ab313403"),
     ProductFacts(maker: "R&D Systems", cat: "MAB7759", target: "SOX6", host: "mouse", clonality: "monoclonal IgG2A, clone 667136",
                  source: "rndsystems.com MAB7759 (validated for ICC)"),
     ProductFacts(maker: "Merck (Millipore)", cat: "AB5732", target: "Engrailed-1", host: "rabbit", clonality: "polyclonal",
@@ -111,6 +114,25 @@ func facts(for q: Secondary) -> SecondaryFacts? {
        let dye = r.abName.split(whereSeparator: { !$0.isNumber }).compactMap({ Int($0) }).first(where: { [350, 405, 488, 532, 546, 555, 568, 594, 633, 647, 660, 680, 750].contains($0) }) {
         return SecondaryFacts(maker: r.vendorName, cat: r.catalogNum, raisedIn: r.sourceOrganism.lowercased(), target: target, dye: dye,
                               source: "Antibody Registry, RRID \(r.rrid)")
+    }
+    return nil
+}
+
+/// The app's own checked facts for a catalogue number, as a manufacturer's record: what the fridge's check
+/// falls back on when the Antibody Registry does not list a product yet (new products take a while to
+/// appear there, and have no RRID until they do). Exact catalogue numbers only: an old misspelling is still
+/// flagged as one.
+func checkedRecord(_ cat: String) -> RegistryRecord? {
+    let k = catKey(cat)
+    guard !k.isEmpty else { return nil }
+    if let f = primaryIndex[k] {
+        return RegistryRecord(catalogNum: f.cat, vendorName: f.maker, abTarget: f.target, sourceOrganism: f.host.capitalized,
+                              clonality: f.clonality, abName: "\(f.target) antibody", url: f.url, checkedOn: f.source)
+    }
+    if let f = secondaryIndex[k] {
+        return RegistryRecord(catalogNum: f.cat, vendorName: f.maker, abTarget: "\(f.target.capitalized) IgG (H+L)", sourceOrganism: f.raisedIn.capitalized,
+                              clonality: "polyclonal", abName: "\(f.raisedIn.capitalized) anti-\(f.target.capitalized) IgG (H+L), Alexa Fluor \(f.dye)",
+                              url: nil, checkedOn: f.source)
     }
     return nil
 }

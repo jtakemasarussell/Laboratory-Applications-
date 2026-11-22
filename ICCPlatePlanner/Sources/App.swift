@@ -55,7 +55,8 @@ enum Main {
                          Antibody(name: "Corin (rat)", company: "R&D Systems", cat: "MAB2209"),
                          Antibody(name: "Pitx2 (sheep)", company: "R&D", cat: "AD7388"),
                          Antibody(name: "Barhl1 (rab)", company: "Novus Bio", cat: "NBO1-86513"),
-                         Antibody(name: "TH (rab)", company: "Merck", cat: "MAB318")]
+                         Antibody(name: "TH (rab)", company: "Merck", cat: "MAB318"),
+                         Antibody(name: "Pitx3 (rab)", company: "abcam", cat: "ab313403")]
             let secs = [Secondary(name: "647 rab", dilution: 400, company: "Thermo Fisher", cat: "A-31571"),
                         Secondary(name: "594 g", dilution: 500, company: "Thermo Fisher", cat: "A-11058")]
             prims.forEach { Registry.shared.check(primary: $0, force: true) }
@@ -299,7 +300,13 @@ func decodePlate(_ data: Data) throws -> Experiment {
 }
 
 final class Store: ObservableObject {
-    @Published var exp: Experiment { didSet { recordUndo(oldValue); save(); fxAfterChange(oldValue); syncTubes(oldValue) } }
+    @Published var exp: Experiment {
+        didSet {
+            // putting secondaries in their primaries' order is not an edit: no undo step, no flight
+            if arranging { save(); return }
+            recordUndo(oldValue); save(); fxAfterChange(oldValue); syncTubes(oldValue); arrangeSoon()
+        }
+    }
     @Published var settings: Settings { didSet { save() } }
     @Published var library: Library { didSet { save() } }
     @Published var tool: Tool = .erase {
@@ -387,6 +394,8 @@ final class Store: ObservableObject {
     fileprivate var recheckWork: DispatchWorkItem?
     /// Development: the feature test exercises the fridge sync on a store that does not save.
     var syncTubesInTests = false
+    fileprivate var arranging = false
+    fileprivate var arrangeWork: DispatchWorkItem?
 
     private static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -664,6 +673,9 @@ final class Store: ObservableObject {
         for j in copy.primaries.indices { copy.primaries[j].id = UUID() }
         for j in copy.secondaries.indices { copy.secondaries[j].id = UUID() }
         var e = exp
+        e.keepColours(from: i + 1)                           // the stains after it keep their colours
+        copy.colorHex = nil
+        copy.colorHex = freshStainHex(joining: e.sets, at: i + 1) ?? setColorHex(i + 1)   // and the copy gets its own
         e.sets.insert(copy, at: i + 1)
         exp = e
         tool = .paint(copy.id)
@@ -751,7 +763,8 @@ final class Store: ObservableObject {
 
     /// A new stain set starts blank: no antibodies are pre-filled, the user adds them.
     func addSet() {
-        let s = StainSet()
+        var s = StainSet()
+        s.colorHex = freshStainHex(joining: exp.sets, at: exp.sets.count)     // never another stain's colour
         exp.sets.append(s)
         tool = .paint(s.id)
     }
@@ -759,6 +772,7 @@ final class Store: ObservableObject {
     func removeSet(_ id: UUID) {
         var e = exp
         for i in e.wells.indices where e.wells[i] == id { e.wells[i] = nil }
+        if let k = e.sets.firstIndex(where: { $0.id == id }) { e.keepColours(from: k + 1) }   // the stains after it keep their colours
         e.sets.removeAll { $0.id == id }
         e.blockingOverride = nil
         exp = e
@@ -1288,6 +1302,56 @@ extension Store {
         }
         recheckWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
+    }
+
+    // MARK: secondaries in their primaries' order
+
+    /// Each stain's secondaries in the order of the primaries they find (the secondary for the first primary
+    /// first), then any that find none, then counterstains such as DAPI. Rows keep their contents; only their
+    /// order changes, so it is not an undo step.
+    func arrangePairs() {
+        var e = exp
+        var changed = false
+        for k in e.sets.indices {
+            let s = e.sets[k]
+            guard s.secondaries.count > 1 else { continue }
+            let report = panel(s, library: library)
+            var rest = s.secondaries
+            var ordered: [Secondary] = []
+            for p in s.primaries {
+                guard let name = report.combos.first(where: { $0.primaryID == p.id })?.secondary,
+                      let i = rest.firstIndex(where: { $0.name == name }) else { continue }
+                ordered.append(rest.remove(at: i))
+            }
+            let counter = { (q: Secondary) in fluor(of: q)?.counterstain ?? false }
+            let arranged = ordered + rest.filter { !counter($0) } + rest.filter { counter($0) }
+            if arranged.map(\.id) != s.secondaries.map(\.id) {
+                e.sets[k].secondaries = arranged
+                changed = true
+            }
+        }
+        guard changed else { return }
+        arranging = true
+        withAnimation(motion ? .spring(response: 0.42, dampingFraction: 0.82) : nil) { exp = e }
+        arranging = false
+    }
+
+    /// After an edit: arrange once typing has stopped, so a row never moves under the cursor.
+    func arrangeSoon() {
+        guard persist else { return }
+        arrangeWork?.cancel()
+        var tries = 0
+        func attempt() {
+            let w = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let editing = NSApp.keyWindow?.firstResponder is NSText
+                if editing, tries < 200 { tries += 1; attempt(); return }
+                self.arrangePairs()
+            }
+            arrangeWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: w)
+        }
+        attempt()
     }
 
     /// Erasing well `w` (stain `id`): the aspirator draws it up.

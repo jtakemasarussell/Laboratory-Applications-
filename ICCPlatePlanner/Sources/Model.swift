@@ -381,6 +381,43 @@ let setPalette = ["E2EFDA", "FFF2CC", "DDEBF7", "FCE4D6", "E4DFEC", "EDEDED", "F
 
 func setColorHex(_ index: Int) -> String { setPalette[index % setPalette.count] }
 
+/// Fills a new stain can take: the lab's eight, then more pastels, all light enough for dark lettering.
+let stainChoices = setPalette + ["D4F1F1", "F7D4E6", "E6F4BE", "D3DAF6", "F4E2CC", "DCCBF3", "C9EFDD", "FAD1D1", "FFE3A3", "CBE5F4"]
+
+/// How different two colours look (CIE76 ΔE: about 2 is just noticeable, 10 is clearly different).
+func colourDistance(_ a: String, _ b: String) -> Double {
+    func lab(_ h: String) -> (Double, Double, Double) {
+        let v = UInt32(h, radix: 16) ?? 0
+        func lin(_ c: UInt32) -> Double { let x = Double(c) / 255; return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+        let r = lin((v >> 16) & 0xFF), g = lin((v >> 8) & 0xFF), b = lin(v & 0xFF)
+        let x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047, y = r * 0.2126 + g * 0.7152 + b * 0.0722, z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883
+        func f(_ t: Double) -> Double { t > 0.008856 ? cbrt(t) : 7.787 * t + 16.0 / 116 }
+        return (116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z)))
+    }
+    let p = lab(a), q = lab(b)
+    return sqrt(pow(p.0 - q.0, 2) + pow(p.1 - q.1, 2) + pow(p.2 - q.2, 2))
+}
+
+/// The colour for a stain about to join `sets` at position `index`: its usual colour while that is clearly
+/// different from every other stain's (nil: keep using it), otherwise the choice least like any of them.
+func freshStainHex(joining sets: [StainSet], at index: Int) -> String? {
+    let used = sets.enumerated().map { fillHex($0.element, $0.offset) }
+    func nearest(_ c: String) -> Double { used.map { colourDistance(c, $0) }.min() ?? 1000 }
+    if index < setPalette.count, nearest(setColorHex(index)) >= 12 { return nil }
+    var best = stainChoices[0], score = -1.0
+    for c in stainChoices { let d = nearest(c); if d > score { best = c; score = d } }
+    return best
+}
+
+extension Experiment {
+    /// Gives every stain from `index` on its current colour to keep, so adding, duplicating or removing a stain
+    /// before it does not hand it another stain's colour.
+    mutating func keepColours(from index: Int) {
+        guard index < sets.count else { return }
+        for k in index..<sets.count where sets[k].colorHex == nil { sets[k].colorHex = setColorHex(k) }
+    }
+}
+
 /// The colour a stain set's wells are filled with, in the app and in the Excel sheet.
 func fillHex(_ set: StainSet, _ index: Int) -> String {
     // a custom colour is only used if it really is six hex digits; anything else falls back to the default

@@ -257,6 +257,40 @@ func featureTest(statePath: String?) {
     expect(!fz.library.primaries.contains { $0.name == "NEW (m)" }, "a new row typed on the card is not put in the fridge until export")
     expect(fz.library.primaries.count == 2, "the fridge keeps the same tubes")
 
+    // every new stain gets a colour of its own; the others keep theirs when stains come and go
+    let cs = Store(inMemory: sampleExperiment())
+    for _ in 0..<(12 - cs.exp.sets.count) { cs.addSet() }
+    let fills = cs.exp.sets.enumerated().map { fillHex($0.element, $0.offset) }
+    let closest = fills.indices.flatMap { i in fills.indices.filter { $0 > i }.map { colourDistance(fills[i], fills[$0]) } }.min() ?? 0
+    expect(Set(fills).count == fills.count && closest >= 5, "twelve stains, twelve colours (closest pair ΔE \(Int(closest)))")
+    let before3 = fillHex(cs.exp.sets[3], 3), before5 = fillHex(cs.exp.sets[5], 5)
+    let id3 = cs.exp.sets[3].id, id5 = cs.exp.sets[5].id
+    cs.removeSet(cs.exp.sets[1].id)
+    let k3 = cs.exp.sets.firstIndex { $0.id == id3 }!, k5 = cs.exp.sets.firstIndex { $0.id == id5 }!
+    expect(fillHex(cs.exp.sets[k3], k3) == before3 && fillHex(cs.exp.sets[k5], k5) == before5, "removing a stain leaves the others' colours alone")
+    cs.duplicateSet(cs.exp.sets[0].id)
+    let n3 = cs.exp.sets.firstIndex { $0.id == id3 }!
+    expect(fillHex(cs.exp.sets[1], 1) != fillHex(cs.exp.sets[0], 0), "a duplicated stain gets its own colour")
+    expect(fillHex(cs.exp.sets[n3], n3) == before3, "and the stains after it keep theirs")
+    let cs2 = Store(inMemory: Experiment())
+    cs2.addSet(); cs2.addSet()
+    expect(fillHex(cs2.exp.sets[0], 0) == setPalette[0] && fillHex(cs2.exp.sets[1], 1) == setPalette[1], "the first stains keep the lab's usual green and gold")
+
+    // secondaries line up with the primaries they find, counterstains last; it is not an undo step
+    let ar = Store(inMemory: sampleExperiment())
+    ar.undoGrouping = 0
+    ar.exp.sets[0].primaries = [Antibody(name: "LMX1A/B (rab)", company: "Merck", cat: "AB10533", dilution: 1000),
+                                Antibody(name: "FOXA2 (g)", company: "R&D Systems", cat: "AF2400", dilution: 500)]
+    ar.exp.sets[0].secondaries = [Secondary(name: "DAPI", dilution: 1000), Secondary(name: "594 g", dilution: 500), Secondary(name: "488 rab", dilution: 500)]
+    let undosBefore = ar.undoCount
+    ar.arrangePairs()
+    expect(ar.exp.sets[0].secondaries.map { $0.name } == ["488 rab", "594 g", "DAPI"],
+           "secondaries follow their primaries' order, the counterstain last")
+    expect(ar.undoCount == undosBefore, "putting them in order is not an undo step")
+    ar.exp.sets[0].primaries.swapAt(0, 1)
+    ar.arrangePairs()
+    expect(ar.exp.sets[0].secondaries.map { $0.name } == ["594 g", "488 rab", "DAPI"], "and follow them when the primaries change order")
+
     // a quick stroke the system reported as C1 then C5 still paints C2–C4; leaving the plate breaks it
     let sd = Store(inMemory: sampleExperiment())
     sd.tool = .paint(sd.exp.sets[0].id)

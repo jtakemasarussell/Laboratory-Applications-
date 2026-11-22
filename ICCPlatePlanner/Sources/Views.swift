@@ -202,6 +202,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
         }
         .overlay(FxOverlay(store: store).allowsHitTesting(false))
+        .task { store.arrangeSoon() }          // cards saved before secondaries were kept in order line up too
         .overlay(ConfettiLayer())
         .tint(Brand.navy)
         .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room

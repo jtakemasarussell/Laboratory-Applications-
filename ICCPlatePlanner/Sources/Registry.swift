@@ -20,9 +20,21 @@ struct RegistryRecord: Codable, Equatable {
     var clonality: String
     var abName: String
     var url: String?
+    /// Set when the record comes from the manufacturer's own page, checked for the app, rather than from the
+    /// registry: the product is not listed there yet, so it has no RRID.
+    var checkedOn: String? = nil
 
-    var rrid: String { "AB_\(abId)" }
-    var link: URL? { url.flatMap(URL.init(string:)) ?? URL(string: "https://scicrunch.org/resolver/RRID:\(rrid)") }
+    var rrid: String { abId > 0 ? "AB_\(abId)" : "" }
+    var link: URL? { url.flatMap(URL.init(string:)) ?? (abId > 0 ? URL(string: "https://scicrunch.org/resolver/RRID:\(rrid)") : nil) }
+
+    /// A record from the manufacturer's page (no registry entry, so no RRID).
+    init(catalogNum: String, vendorName: String, abTarget: String, sourceOrganism: String, clonality: String, abName: String,
+         url: String?, checkedOn: String) {
+        abId = 0
+        self.catalogNum = catalogNum; self.vendorName = vendorName; self.abTarget = abTarget
+        self.sourceOrganism = sourceOrganism; self.clonality = clonality; self.abName = abName
+        self.url = url; self.checkedOn = checkedOn
+    }
 
     init?(_ d: [String: Any]) {
         guard let id = d["abId"] as? Int else { return nil }
@@ -68,10 +80,15 @@ struct RegistryResult: Equatable {
     /// One or two lines for the fridge.
     var summary: String {
         let r = record
-        let facts = r.map { "\($0.vendorName) \($0.catalogNum): \($0.abTarget), \($0.sourceOrganism.lowercased()) \($0.clonality.lowercased()) · RRID \($0.rrid)" } ?? ""
+        let facts = r.map { rec in
+            "\(rec.vendorName) \(rec.catalogNum): \(rec.abTarget), \(rec.sourceOrganism.lowercased()) \(rec.checkedOn == nil ? rec.clonality.lowercased() : rec.clonality)"
+                + (rec.abId > 0 ? " · RRID \(rec.rrid)" : " · not in the Antibody Registry yet, so no RRID")
+        } ?? ""
         switch status {
         case .checking: return "Checking with the manufacturer's record…"
-        case .verified: return "Matches the manufacturer's record. " + facts
+        case .verified:
+            if let page = r?.checkedOn { return "Matches the manufacturer's product page (\(page)). " + facts }
+            return "Matches the manufacturer's record. " + facts
         case .mismatch(let why): return why.joined(separator: " ") + (facts.isEmpty ? "" : "  (" + facts + ")")
         case .notFound(let near):
             guard near != nil else {
@@ -194,17 +211,22 @@ final class Registry: ObservableObject {
             let hits = try await search(cat)
             let exact = hits.filter { cats($0).contains(want) }
             if let best = exact.first(where: { sameMaker($0.vendorName, company) }) ?? exact.first { return .found(best) }
+            // not listed yet, but checked on the manufacturer's own page for the app
+            if let page = checkedRecord(cat) { return .found(page) }
             // nothing with that number: look for the nearest one, by its digits
             let digits = String(want.filter { $0.isNumber })
             var pool = hits
             if digits.count >= 4, digits != want { pool += (try? await search(digits)) ?? [] }
+            // a likely typo only from the same company: a near number from another maker is a different
+            // product (ab313403 is not BioLegend's anti-ZAP-70 "313403")
             let near = pool
                 .map { r in (r, cats(r).map { editDistance($0, want) }.min() ?? 99) }
-                .filter { $0.1 <= 2 }
+                .filter { $0.1 <= 2 && sameMaker($0.0.vendorName, company) }
                 .sorted { ($0.1, sameMaker($0.0.vendorName, company) ? 0 : 1) < ($1.1, sameMaker($1.0.vendorName, company) ? 0 : 1) }
                 .first?.0
             return .missing(near)
         } catch {
+            if let page = checkedRecord(cat) { return .found(page) }
             return .failed(error.localizedDescription)
         }
     }
