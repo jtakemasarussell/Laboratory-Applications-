@@ -247,6 +247,8 @@ func featureTest(statePath: String?) {
     expect(fz.library.primaries.first { $0.id == tubeID }?.cat == "AB152", "a catalogue number fixed on a card is saved to its fridge tube")
     fz.exp.sets[0].secondaries[0].cat = "A-21206"
     expect(fz.library.secondaries[0].cat == "A-21206", "a secondary's catalogue number fixed on a card is saved to its tube")
+    fz.exp.sets[0].secondaries[0].company = "Thermo Fisher Scientific"
+    expect(fz.library.secondaries[0].company == "Thermo Fisher Scientific", "a secondary's company edited on a card is saved to its tube")
     fz.exp.sets[0].primaries[0].name = "TH (rabbit)"
     expect(fz.library.primaries.first { $0.id == tubeID }?.name == "TH (rabbit)", "a corrected name reaches the same tube")
     fz.exp.sets[0].primaries[0].name = "FOXA2 (g)"

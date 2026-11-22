@@ -78,6 +78,14 @@ extension Color {
 
 private let plain = FloatingPointFormatStyle<Double>.number.grouping(.never)
 
+extension Binding where Value == String? {
+    /// An optional text as a plain field: empty when missing, and missing again when emptied.
+    var orEmpty: Binding<String> {
+        Binding<String>(get: { wrappedValue ?? "" },
+                        set: { new in wrappedValue = new.trimmingCharacters(in: .whitespaces).isEmpty ? nil : new })
+    }
+}
+
 extension Binding where Value: MutableCollection, Value.Element: Identifiable {
     /// A binding to one row that is looked up by id every time it is read or written. A row that has
     /// just been deleted can therefore never be reached through a stale index.
@@ -533,7 +541,7 @@ struct StainCard: View {
             }
             FridgeButton(secondaries: false, setID: setID)
 
-            columnHeader("2nd", [("", 15), ("2ND · SECONDARY / COUNTERSTAIN", nil), ("DILUTION", 76), ("ADD", 58), ("", 16)])
+            columnHeader("2nd", [("", 15), ("2ND · SECONDARY", nil), ("COMPANY", 110), ("CAT#", 74), ("DILUTION", 76), ("ADD", 58), ("", 16)])
             ForEach(set.secondaries) { q in
                 let b = binding.secondaries.row(q)
                 HStack(spacing: 6) {
@@ -541,6 +549,10 @@ struct StainCard: View {
                     VerdictIcon(verdict: v.0, why: v.1, size: 13).frame(width: 15)
                         .animation(store.motion ? .spring(response: 0.35, dampingFraction: 0.55) : nil, value: v.0)
                     TextField("e.g. 488 rab", text: b.name)
+                    // the maker and catalogue number, as for primaries: edits go back to the fridge tube and
+                    // are checked with the manufacturer's record
+                    TextField("Company", text: b.company.orEmpty).frame(width: 110)
+                    TextField("Cat#", text: b.cat.orEmpty).frame(width: 74)
                     Text("1:").foregroundStyle(.secondary).frame(width: 12)
                     TextField("", value: b.dilution, format: plain).frame(width: 58)
                     Text(q.dilution > 0 ? "\(fmtNum(vol / q.dilution)) µL" : "dilution?")
