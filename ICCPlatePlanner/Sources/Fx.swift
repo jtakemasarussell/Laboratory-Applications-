@@ -19,6 +19,10 @@ final class FxCenter {
     /// an effect plays: tracking it continuously (SwiftUI preferences) re-ran the view graph on every frame
     /// of scrolling and made the card list lag.
     weak var gridAnchor: NSView?
+    /// The whole plate (its moulded body), for the lid.
+    weak var plateAnchor: NSView?
+    /// The plan on screen, for the loupe to look up what is in a well.
+    weak var store: Store?
     var cardAnchors: [UUID: Weak] = [:]
     final class Weak { weak var view: NSView?; init(_ v: NSView) { view = v } }
 
@@ -29,6 +33,7 @@ final class FxCenter {
         return CGRect(x: r.minX, y: fx.bounds.height - r.maxY, width: r.width, height: r.height)
     }
     var gridFrame: CGRect { rect(of: gridAnchor) }
+    var plateFrame: CGRect { rect(of: plateAnchor) }
     var cardFrames: [UUID: CGRect] {
         var out: [UUID: CGRect] = [:]
         for (id, w) in cardAnchors { let r = rect(of: w.view); if r != .zero { out[id] = r } }
@@ -47,7 +52,7 @@ let fxSpace = "fxroot"
 
 /// An invisible view that marks where the plate's grid or a stain card is.
 struct FxAnchor: NSViewRepresentable {
-    enum Kind { case grid, card(UUID) }
+    enum Kind { case grid, plate, card(UUID) }
     let kind: Kind
     func makeNSView(context: Context) -> AnchorView {
         let v = AnchorView(frame: .zero)
@@ -72,12 +77,14 @@ struct FxAnchor: NSViewRepresentable {
         func register() {
             switch kind {
             case .grid: FxCenter.shared.gridAnchor = self
+            case .plate: FxCenter.shared.plateAnchor = self
             case .card(let id): FxCenter.shared.cardAnchors[id] = FxCenter.Weak(self)
             }
         }
         private func unregister() {
             switch kind {
             case .grid: if FxCenter.shared.gridAnchor === self { FxCenter.shared.gridAnchor = nil }
+            case .plate: if FxCenter.shared.plateAnchor === self { FxCenter.shared.plateAnchor = nil }
             case .card(let id): if FxCenter.shared.cardAnchors[id]?.view === self { FxCenter.shared.cardAnchors[id] = nil }
             }
         }
@@ -87,16 +94,22 @@ struct FxAnchor: NSViewRepresentable {
 extension View {
     /// Marks this view as the plate's grid.
     func fxGrid() -> some View { background(FxAnchor(kind: .grid)) }
+    /// Marks this view as the whole plate.
+    func fxPlate() -> some View { background(FxAnchor(kind: .plate)) }
     /// Marks this view as stain `id`'s card.
     func fxCard(_ id: UUID) -> some View { background(FxAnchor(kind: .card(id))) }
 }
 
 struct FxOverlay: NSViewRepresentable {
-    func makeNSView(context: Context) -> FxView { FxView(frame: .zero) }
-    func updateNSView(_ v: FxView, context: Context) { if v.window != nil { FxCenter.shared.view = v } }
+    let store: Store
+    func makeNSView(context: Context) -> FxView { FxCenter.shared.store = store; return FxView(frame: .zero) }
+    func updateNSView(_ v: FxView, context: Context) {
+        FxCenter.shared.store = store
+        if v.window != nil { FxCenter.shared.view = v }
+    }
 }
 
-private extension CALayer {
+extension CALayer {
     func run(_ a: CAAnimation, _ key: String, delay: Double = 0) {
         a.beginTime = CACurrentMediaTime() + delay
         a.fillMode = .both
@@ -105,7 +118,7 @@ private extension CALayer {
     }
 }
 
-private func frames(_ path: String, _ values: [Any], _ times: [Double], _ d: Double, _ timing: CAMediaTimingFunctionName = .easeInEaseOut) -> CAKeyframeAnimation {
+func frames(_ path: String, _ values: [Any], _ times: [Double], _ d: Double, _ timing: CAMediaTimingFunctionName = .easeInEaseOut) -> CAKeyframeAnimation {
     let a = CAKeyframeAnimation(keyPath: path)
     a.values = values
     a.keyTimes = times.map { NSNumber(value: $0) }
@@ -118,7 +131,9 @@ final class FxView: NSView {
     private static var images: [String: CGImage?] = [:]
     /// Everything is drawn in this layer, laid out top-down like the SwiftUI views. (AppKit resets the
     /// flip on a view's own layer, which turned every effect upside down; a sublayer keeps it.)
-    private let space = CALayer()
+    let space = CALayer()
+    /// Hold Option over a stained well: a microscope eyepiece over it.
+    let loupe = LoupeController()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -148,10 +163,13 @@ final class FxView: NSView {
     // the effects layer in the window, kept the same way as the markers
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { FxCenter.shared.view = self } else if FxCenter.shared.view === self { FxCenter.shared.view = nil }
+        if window != nil { FxCenter.shared.view = self; loupe.attach(self) } else {
+            loupe.detach()
+            if FxCenter.shared.view === self { FxCenter.shared.view = nil }
+        }
     }
 
-    private static func image(_ key: String, _ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
+    static func image(_ key: String, _ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
         if let i = images[key] { return i }
         let i = renderImage(size, screenScale, draw)
         images[key] = i
@@ -159,7 +177,7 @@ final class FxView: NSView {
     }
 
     /// Removes `l` once its animations are over.
-    private func expire(_ l: CALayer, after: Double) {
+    func expire(_ l: CALayer, after: Double) {
         DispatchQueue.main.asyncAfter(deadline: .now() + after) { l.removeFromSuperlayer() }
     }
 

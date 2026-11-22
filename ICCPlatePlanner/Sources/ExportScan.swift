@@ -22,6 +22,9 @@ final class ExportRun: ObservableObject {
     @Published var done = false
     let url: URL
     let total: Int
+    /// The plate map for the printout: each stained well's colour.
+    var map: [Int: String] = [:]
+    var motion = true
     init(url: URL, total: Int) { self.url = url; self.total = total }
 }
 
@@ -33,6 +36,9 @@ final class ExportScanController: NSObject, NSWindowDelegate {
     private var run: ExportRun?
     private var finished: (() -> Void)?
     private var keyMonitor: Any?
+
+    /// Development: jump to the end of the scan, as Esc does.
+    func devSkip() { scan?.skip() }
 
     /// Shows the scan for `store`'s plate; `finished` runs once (the confetti), when the scan ends.
     func present(_ store: Store, url: URL, finished: @escaping () -> Void) {
@@ -53,6 +59,8 @@ final class ExportScanController: NSObject, NSWindowDelegate {
         }
         let infos = sets.indices.map { store.previewInfo(for: $0) }
         let r = ExportRun(url: url, total: wells.count)
+        r.map = Dictionary(wells.map { ($0.index, $0.fill) }, uniquingKeysWith: { a, _ in a })
+        r.motion = store.motion
         run = r
         self.finished = finished
         let size = NSSize(width: 860, height: 520)
@@ -154,6 +162,18 @@ struct ExportScanChrome: View {
     let open: () -> Void, reveal: () -> Void, dismiss: () -> Void, skip: () -> Void
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            // the plan, printed: a page slides out of a slot over the scope
+            if run.done {
+                Printout(map: run.map, title: run.url.lastPathComponent, motion: run.motion)
+                    .frame(width: Printout.size.width, height: Printout.size.height)
+                    .offset(x: 700 - Printout.size.width / 2, y: 114)
+            }
+            bar
+        }
+    }
+
+    private var bar: some View {
         VStack {
             Spacer()
             HStack(spacing: 10) {

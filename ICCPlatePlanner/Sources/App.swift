@@ -45,6 +45,7 @@ enum Main {
         if let i = a.firstIndex(of: "--qc"), a.count > i + 1 { plateQC(a[i + 1]); return }
         if let i = a.firstIndex(of: "--lag-check"), a.count > i + 1 { lagCheck(a[i + 1]); return }
         if let i = a.firstIndex(of: "--fx-shot"), a.count > i + 2 { fxShot(a[i + 1], a[i + 2]); return }
+        if let i = a.firstIndex(of: "--fx-shot2"), a.count > i + 2 { fxShot2(a[i + 1], a[i + 2]); return }
         if a.contains("--pair-qc") { pairQC(); return }
         if a.contains("--registry-test") {
             // live: the lab's antibodies, two catalogue typos and a mislabelled secondary, checked with the registry
@@ -247,7 +248,7 @@ struct PlannerApp: App {
                 Toggle("Animations", isOn: $store.animations)
                 Toggle("Trackpad Feedback", isOn: $store.haptics)
                 Toggle("Show Hologram", isOn: $store.showHologram)
-                Toggle("Microscope Room (Dark)", isOn: $store.darkRoom)
+                Toggle("Microscope Room (Dark)", isOn: Binding(get: { store.darkRoom }, set: { store.switchRoom($0) }))
                 Toggle("Sounds", isOn: $store.sounds)
                 Toggle("Show Splash at Launch", isOn: Binding(get: { SplashController.enabledAtLaunch }, set: { SplashController.enabledAtLaunch = $0 }))
             }
@@ -328,6 +329,8 @@ final class Store: ObservableObject {
     }
     /// Bumped when the selected stain's button is clicked again, to show its hologram now.
     @Published var hologramRequest = 0
+    /// Bumped when the user clicks a stain to paint with: only then does its hologram come up.
+    @Published var stainPicked = 0
     /// Wells painted or erased during the current drag, shown at once on the plate and committed to the
     /// plan when the drag ends: painting then redraws only the plate, not every card in the window.
     let paint = PaintBuffer()
@@ -494,10 +497,35 @@ final class Store: ObservableObject {
         guard let previous = undoStack.popLast() else { return }
         tap(.generic)
         restoring = true
+        let before = exp
         redoStack.append(exp)
         exp = previous
         restoring = false
         afterRestore()
+        fxRewind(from: before)
+    }
+
+    /// When each well was last painted, so an undo takes the newest wells out first.
+    private var paintedAt: [Int: Int] = [:]
+    private var paintStamp = 0
+
+    /// Undone wells shrink back out, newest first; wells the undo brings back pop in.
+    private func fxRewind(from old: Experiment) {
+        let fx = FxCenter.shared
+        guard motion, fx.usable else { return }
+        func hex(_ e: Experiment, _ w: Int) -> String? {
+            guard let id = e.wells[w], let k = e.sets.firstIndex(where: { $0.id == id }) else { return nil }
+            return fillHex(e.sets[k], k)
+        }
+        var out: [(Int, String)] = [], back: [(Int, String)] = []
+        for w in 0..<96 where old.wells[w] != exp.wells[w] {
+            if let h = hex(old, w) { out.append((w, h)) }
+            if let h = hex(exp, w) { back.append((w, h)) }
+        }
+        func rank(_ w: Int) -> Int { paintedAt[w] ?? (w - 1000) }
+        out.sort { rank($0.0) > rank($1.0) }
+        back.sort { $0.0 > $1.0 }
+        fx.view?.rewind(out: out, back: back, grid: fx.gridFrame, cw: fx.cw, ch: fx.ch)
     }
 
     func redo() {
@@ -540,10 +568,13 @@ final class Store: ObservableObject {
             if current != new {
                 paint.set(w, new)
                 tap(.alignment)
-                if new != nil { fxPaint(w, id) }
+                if new != nil {
+                    paintStamp += 1; paintedAt[w] = paintStamp
+                    fxPaint(w, id)
+                } else if let c = current { fxErase(w, c) }
             }
         case .erase:
-            if paint.value(w, exp.wells[w]) != nil { paint.set(w, nil); tap(.alignment) }
+            if let c = paint.value(w, exp.wells[w]) { paint.set(w, nil); tap(.alignment); fxErase(w, c) }
         case .text:
             if selectedWell != w { selectedWell = w }
         case .tag(let sampleID):
@@ -730,6 +761,15 @@ final class Store: ObservableObject {
     }
 
     func clearPlate() {
+        let fx = FxCenter.shared
+        if motion, fx.usable {
+            let ids = exp.sets.map { $0.id }
+            let stained: [(Int, String)] = (0..<96).compactMap { w in
+                guard let id = exp.wells[w], let k = ids.firstIndex(of: id) else { return nil }
+                return (w, fillHex(exp.sets[k], k))
+            }
+            if !stained.isEmpty { fx.view?.wash(stained, grid: fx.gridFrame, cw: fx.cw, ch: fx.ch) }
+        }
         var e = exp
         e.wells = Array(repeating: nil, count: 96)
         e.wellText = Array(repeating: "", count: 96)
@@ -796,6 +836,7 @@ final class Store: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try encodePlate(exp).write(to: url, options: .atomic)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.fxLid(lowering: true) }
             showToast("Plate saved. Cryopreserved for later.")
         } catch {
             errorAlert("Could not save the plate", error)
@@ -814,8 +855,10 @@ final class Store: ObservableObject {
             let loaded = try decodePlate(Data(contentsOf: url))
             lastChange = .distantPast   // loading always starts a new undo group
             fxQuietUntil = Date().addingTimeInterval(1.2)
+            DyeFlash.quiet(for: 2)
             exp = loaded
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.fxThaw() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.fxLid(lowering: false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in self?.fxThaw() }
             selectedWell = nil
             duplicateSource = nil
             validateTool()
@@ -936,6 +979,7 @@ func snapshot(_ path: String) {
     if let i = a.firstIndex(of: "--holo"), a.count > i + 2, let k = Int(a[i + 1]), let t = Double(a[i + 2]), k >= 1, k <= store.exp.sets.count {
         // the hologram over stain k, `t` seconds into the protocol
         store.tool = .paint(store.exp.sets[k - 1].id)
+        store.stainPicked += 1
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(HoloController.dwell + 0.9))
         func find(_ v: NSView) -> StainingPreviewView? { (v as? StainingPreviewView) ?? v.subviews.lazy.compactMap(find).first }
@@ -1059,11 +1103,12 @@ func lagCheck(_ platePath: String) {
         return
     }
     phase("plate idle, no stain picked (8 s)", 8)
-    phase("hologram scanning over a stain (14 s)", 14) { store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id) }
+    phase("hologram scanning over a stain (14 s)", 14) { store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id); store.stainPicked += 1 }
     phase("same stain picked again within the cooldown: stays away (3 s)", 3) {
         store.tool = .erase
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
+        store.stainPicked += 1
     }
     phase("pointer moving over the plate: tilt (5 s)", 5) {
         guard let tilt = TiltModel.current else { return }
@@ -1173,6 +1218,29 @@ extension Store {
         let fx = FxCenter.shared
         guard motion, fx.usable else { return }
         fx.view?.thaw(grid: fx.gridFrame, cw: fx.cw, ch: fx.ch)
+    }
+
+    /// Erasing well `w` (stain `id`): the aspirator draws it up.
+    func fxErase(_ w: Int, _ id: UUID) {
+        let fx = FxCenter.shared
+        guard motion, fx.usable, let k = exp.sets.firstIndex(where: { $0.id == id }) else { return }
+        fx.view?.aspirate(at: fx.wellCenter(w), hex: fillHex(exp.sets[k], k), cw: fx.cw, ch: fx.ch)
+        Sounds.aspirate()
+    }
+
+    /// The plate's lid: lifted off an opened plate, lowered onto a saved one.
+    func fxLid(lowering: Bool) {
+        let fx = FxCenter.shared
+        guard motion, fx.usable else { return }
+        fx.view?.lid(over: fx.plateFrame, grid: fx.gridFrame, cw: fx.cw, ch: fx.ch, lowering: lowering)
+    }
+
+    /// The microscope room on or off; the lights go out (or come back on) panel by panel.
+    func switchRoom(_ dark: Bool) {
+        guard dark != darkRoom else { return }
+        if motion { RoomLights.play(over: FxCenter.shared.view?.window ?? NSApp.mainWindow, toDark: dark) }
+        DyeFlash.quiet(for: 1.5)          // the window is rebuilt in the new colours: no dye lights up for that
+        darkRoom = dark
     }
 
     func fxPaint(_ w: Int, _ id: UUID) {
@@ -1302,6 +1370,7 @@ func fxShot(_ platePath: String, _ outPrefix: String) {
     RunLoop.main.run(until: Date().addingTimeInterval(0.6))
     // the hologram plays and the room dims
     store.tool = .paint(store.exp.sets[min(2, store.exp.sets.count - 1)].id)
+    store.stainPicked += 1
     RunLoop.main.run(until: Date().addingTimeInterval(HoloController.dwell + 1.4))
     print("hologram shown:", HoloController.shared.shown != nil)
     shot("dim")

@@ -201,7 +201,7 @@ struct ContentView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: store.toast?.id)
             .allowsHitTesting(false)
         }
-        .overlay(FxOverlay().allowsHitTesting(false))
+        .overlay(FxOverlay(store: store).allowsHitTesting(false))
         .overlay(ConfettiLayer())
         .tint(Brand.navy)
         .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room
@@ -691,6 +691,7 @@ struct PlateSection: View {
                         }
                     }
                     TiltPlate(on: store.motion, model: tilt, hover: hover) { plateBody }
+                        .fxPlate()          // the lid's outline: the plate lying flat, outside the tilt
                         // The marker the effects aim at sits outside the tilt, over where the grid lies flat
                         // (plateBody's padding, then the row letters; the column numbers and their gap).
                         // Inside the tilt, AppKit reported it hundreds of points away while the plate leaned
@@ -783,7 +784,7 @@ struct PlateSection: View {
         let on = store.tool == t
         return Button {
             // the selected stain clicked again: show its hologram now
-            if on, case .paint = t { store.hologramRequest += 1 }
+            if on, case .paint = t { store.hologramRequest += 1 } else if case .paint = t { store.stainPicked += 1 }
             store.tool = t
         } label: {
             HStack(spacing: 6) { label() }
@@ -1010,8 +1011,11 @@ struct PanelStrip: View {
     @EnvironmentObject var store: Store
     let report: PanelReport
 
+    /// A secondary on the card that found no primary: it is the one turned away by a primary left without one.
+    private var stray: String? { report.channels.first { $0.markers.isEmpty && !$0.fluor.counterstain }?.secondary }
+
     private func dockState(_ c: Combination) -> DockState {
-        guard c.secondary != nil else { return .none }
+        guard c.secondary != nil else { return stray != nil ? .refused : .none }
         switch c.verdict {
         case .ok: return .bound(c.fluor?.hex ?? "8EA4C3")
         case .problem: return .refused
@@ -1022,7 +1026,9 @@ struct PanelStrip: View {
     private func dockHelp(_ c: Combination) -> String {
         switch dockState(c) {
         case .bound: return "The secondary takes hold of the primary: \(c.secondary ?? "") recognises \(c.host ?? "its") host."
-        case .refused: return "The secondary cannot bind this primary."
+        case .refused:
+            if c.secondary == nil, let s = stray { return "\(s) cannot bind this \(c.host ?? "") primary: it is turned away." }
+            return "The secondary cannot bind this primary."
         case .unsure: return "Not enough is known to say whether these bind."
         case .none: return "No secondary for this primary yet."
         }
@@ -1057,13 +1063,14 @@ struct PanelStrip: View {
                         if let sname = c.secondary {
                             Text(sname).font(.system(size: 11.5, weight: .semibold)).foregroundColor(Brand.ink)
                                 .help(c.secondaryFacts ?? sname)
-                            if let f = c.fluor { DyeTag(fluor: f) }
+                            if let f = c.fluor { DyeTag(fluor: f, owner: c.primaryID) }
                         } else {
                             Text("no secondary").font(.system(size: 11.5, weight: .semibold)).foregroundColor(Color(hex: "C2362B"))
                         }
                         if let kb = c.hostFacts { Text(kb).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.tail) }
                         Spacer(minLength: 0)
                     }
+                    .onAppear { DyeFlash.owners.insert(c.primaryID) }
                     if c.verdict != .ok {
                         ForEach(c.reasons, id: \.self) { why in
                             Text(why).font(.system(size: 11)).foregroundColor(c.verdict == .problem ? Color(hex: "9B2C22") : .secondary)
@@ -1158,7 +1165,10 @@ struct SummarySection: View {
                         .onHover { inside in
                             if inside { store.spotlightSet = set.id } else if store.spotlightSet == set.id { store.spotlightSet = nil }
                         }
-                        .onTapGesture { store.tool = .paint(set.id) }
+                        .onTapGesture {
+                            if store.tool != .paint(set.id) { store.stainPicked += 1 }
+                            store.tool = .paint(set.id)
+                        }
                         .help("Rest the pointer here to see this stain's wells; click to paint with it")
                         .animation(store.motion ? .easeOut(duration: 0.18) : nil, value: lit)
                     }
@@ -1219,6 +1229,12 @@ struct FlowLayout: Layout {
 /// as the dye and not as a check result.
 struct DyeTag: View {
     let fluor: Fluor
+    /// The pairing row it sits on, so a dye new to that row lights up.
+    var owner: UUID? = nil
+    /// Bumped to light it up for a moment when the dye arrives on the card, like a fluorophore being excited.
+    /// The light is a Core Animation layer over the tag: animating the tag in SwiftUI redrew the whole card
+    /// on every frame.
+    private let flashes = State(initialValue: 0)
     var body: some View {
         let c = Color(hex: fluor.hex)
         let label = fluor.name
@@ -1229,7 +1245,17 @@ struct DyeTag: View {
         .padding(.horizontal, 5).padding(.vertical, 1.5)
         .background(RoundedRectangle(cornerRadius: 4).fill(c.opacity(0.10)))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(c.opacity(0.35), lineWidth: 0.75))
+        .overlay(DyeGlow(hex: fluor.hex, label: label, flashes: flashes.wrappedValue).allowsHitTesting(false))
         .help("Dye: \(fluor.name) (\(fluor.wavelength) nm channel). This shows the colour, not a check result.")
+        .onAppear { if DyeFlash.shouldFlash(fluor, owner: owner) { flash() } }
+        // gone from its row: if the dye comes back later, it lights up again
+        .onDisappear { if let o = owner { DyeFlash.seen.remove("\(o)|\(fluor.name)") } }
+        .onChange(of: fluor.hex) { _ in if Date() >= DyeFlash.quietUntil { flash() } }
+    }
+
+    private func flash() {
+        guard FxCenter.shared.store?.motion ?? true else { return }
+        flashes.wrappedValue += 1
     }
 }
 

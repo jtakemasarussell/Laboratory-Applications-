@@ -81,6 +81,8 @@ struct FridgeRack: View {
     let close: () -> Void
     private let lifted = State(initialValue: UUID?.none)
     private let showForm = State(initialValue: false)
+    /// The door has opened: the tubes slide forward.
+    private let opened = State(initialValue: false)
     // the new tube's fields
     private let fName = State(initialValue: ""), fCompany = State(initialValue: ""), fCat = State(initialValue: "")
     private let fDilution = State(initialValue: ""), fRRID = State(initialValue: ""), fProduct = State(initialValue: "")
@@ -135,7 +137,7 @@ struct FridgeRack: View {
     private func take(_ id: UUID) {
         guard let k = cardIndex else { return }
         if secondaries, let q = store.library.secondaries.first(where: { $0.id == id }) {
-            var n = q; n.id = UUID(); store.exp.sets[k].secondaries.append(n); FreezerLog.touch([q.name])
+            var n = q; n.id = UUID(); DyeFlash.added(n); store.exp.sets[k].secondaries.append(n); FreezerLog.touch([q.name])
         } else if let p = store.library.primaries.first(where: { $0.id == id }) {
             var n = p; n.id = UUID(); store.exp.sets[k].primaries.append(n); FreezerLog.touch([p.name])
         }
@@ -164,7 +166,7 @@ struct FridgeRack: View {
                               cat: opt(fCat.wrappedValue), rrid: opt(fRRID.wrappedValue))
             store.library.secondaries.removeAll { $0.name == name }
             store.library.secondaries.append(q)
-            if toCard, let k = cardIndex { var n = q; n.id = UUID(); store.exp.sets[k].secondaries.append(n) }
+            if toCard, let k = cardIndex { var n = q; n.id = UUID(); DyeFlash.added(n); store.exp.sets[k].secondaries.append(n) }
         } else {
             let p = Antibody(name: name, company: fCompany.wrappedValue.trimmingCharacters(in: .whitespaces),
                              cat: fCat.wrappedValue.trimmingCharacters(in: .whitespaces), dilution: dil, rrid: opt(fRRID.wrappedValue))
@@ -193,7 +195,13 @@ struct FridgeRack: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(64), spacing: 6), count: 6), spacing: 8) {
-                        ForEach(tubes) { t in tube(t) }
+                        ForEach(Array(tubes.enumerated()), id: \.element.id) { k, t in
+                            tube(t)
+                                .offset(y: opened.wrappedValue ? 0 : 18)
+                                .opacity(opened.wrappedValue ? 1 : 0)
+                                .animation(motion ? .spring(response: 0.45, dampingFraction: 0.78).delay(0.22 + Double(min(k, 17)) * 0.022) : nil,
+                                           value: opened.wrappedValue)
+                        }
                     }
                     .padding(10)
                 }
@@ -203,6 +211,8 @@ struct FridgeRack: View {
                     RoundedRectangle(cornerRadius: 8).fill(LinearGradient(colors: [Color(hex: "22364F"), Color(hex: "17263A")], startPoint: .top, endPoint: .bottom))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
                 )
+                // the door swings open and a puff of cold mist rolls out
+                .overlay(FridgeDoor(motion: motion).allowsHitTesting(false))
             }
             if !secondaries {
                 HStack(spacing: 10) {
@@ -242,7 +252,10 @@ struct FridgeRack: View {
         .padding(14)
         .frame(width: 458)
         .background(LinearGradient(colors: [Color(hex: "0E1B2C"), Color(hex: "142740")], startPoint: .top, endPoint: .bottom))
-        .onAppear { checkAll(force: false) }
+        .onAppear {
+            checkAll(force: false)
+            opened.wrappedValue = true
+        }
     }
 
     /// A new tube: its name and what the lab records about it.
@@ -509,6 +522,32 @@ enum Sounds {
         let b = t > 0.12 ? sin(2 * .pi * 1975.5 * (t - 0.12)) * exp(-(t - 0.12) * 3.0) : 0
         return (a * 0.5 + b * 0.45) * 0.28
     }
+    /// The lid settling onto the plate: a soft plastic clack.
+    private static let lidID: SystemSoundID? = systemSound("lid", seconds: 0.12) { t in
+        (sin(2 * .pi * 180 * t) * exp(-t * 55) * 0.6 + sin(2 * .pi * 1400 * t) * exp(-t * 140) * 0.3
+            + Double.random(in: -1...1) * exp(-t * 220) * 0.2) * 0.5
+    }
+    /// The aspirator drawing a well up: a short rising slurp.
+    private static let aspirateID: SystemSoundID? = {
+        var lp = 0.0
+        return systemSound("aspirate", seconds: 0.18) { t in
+            lp += (Double.random(in: -1...1) - lp) * 0.25
+            return (lp * 0.5 + sin(2 * .pi * (420 + 1800 * t) * t) * 0.12) * sin(.pi * t / 0.18) * 0.4
+        }
+    }()
+    /// Buffer washing over the plate: a soft whoosh.
+    private static let washID: SystemSoundID? = {
+        var lp = 0.0
+        return systemSound("wash", seconds: 0.95) { t in
+            lp += (Double.random(in: -1...1) - lp) * 0.06
+            let env = pow(sin(.pi * t / 0.95), 2)
+            return lp * env * 0.9
+        }
+    }()
+    /// A secondary antibody taking hold of its primary: a tiny snap.
+    private static let snapID: SystemSoundID? = systemSound("snap", seconds: 0.04) { t in
+        sin(2 * .pi * 3200 * t) * exp(-t * 240) * 0.28
+    }
     /// The hum: an audio player loaded and primed ahead of time (NSSound's play() took ~110 ms to start).
     private static let hum: AVAudioPlayer? = {
         let data = wav(seconds: 2.0) { t in
@@ -527,6 +566,9 @@ enum Sounds {
         on = true
         print("click", clickID != nil ? "made" : "could not be made")
         print("chime", chimeID != nil ? "made" : "could not be made")
+        for (name, id) in [("lid", lidID), ("aspirate", aspirateID), ("wash", washID), ("snap", snapID)] {
+            print(name, id != nil ? "made" : "could not be made")
+        }
         _ = hum
         let h0 = Date()
         scanning(true)
@@ -542,7 +584,7 @@ enum Sounds {
     /// Makes the sounds in the background, so none is built at the moment it should play.
     static func prewarm() {
         guard on else { return }
-        DispatchQueue.global(qos: .utility).async { _ = clickID; _ = chimeID; _ = hum }
+        DispatchQueue.global(qos: .utility).async { _ = clickID; _ = chimeID; _ = hum; _ = lidID; _ = aspirateID; _ = washID; _ = snapID }
     }
 
     static func pipette() {
@@ -551,6 +593,14 @@ enum Sounds {
         AudioServicesPlaySystemSound(id)
     }
     static func done() { guard on, let id = chimeID else { return }; AudioServicesPlaySystemSound(id) }
+    static func lid() { guard on, let id = lidID else { return }; AudioServicesPlaySystemSound(id) }
+    static func wash() { guard on, let id = washID else { return }; AudioServicesPlaySystemSound(id) }
+    static func snap() { guard on, let id = snapID else { return }; AudioServicesPlaySystemSound(id) }
+    static func aspirate() {
+        guard on, Date().timeIntervalSince(lastClick) > 0.045, let id = aspirateID else { return }
+        lastClick = Date()
+        AudioServicesPlaySystemSound(id)
+    }
     static func scanning(_ yes: Bool) {
         guard let h = hum else { return }
         if yes && on {

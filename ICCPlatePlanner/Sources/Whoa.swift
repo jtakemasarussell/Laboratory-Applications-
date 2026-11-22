@@ -42,7 +42,9 @@ struct DockingIcon: NSViewRepresentable {
     let motion: Bool
     /// Stagger, so a card's pairings dock one after another.
     let delay: Double
-    static let size = CGSize(width: 40, height: 16)
+    /// Drawn for 40 × 16 and shown 1.3 times bigger, so the binding reads at a glance.
+    static let zoom: CGFloat = 1.3
+    static let size = CGSize(width: 40 * zoom, height: 16 * zoom)
 
     func makeNSView(context: Context) -> DockingView { DockingView(frame: CGRect(origin: .zero, size: Self.size)) }
     func updateNSView(_ v: DockingView, context: Context) { v.show(state, motion: motion, delay: delay) }
@@ -50,7 +52,9 @@ struct DockingIcon: NSViewRepresentable {
 }
 
 final class DockingView: NSView {
-    private let primary = CALayer(), secondary = CALayer(), glow = CALayer(), ring = CALayer()
+    private let primary = CALayer(), secondary = CALayer(), glow = CALayer(), ring = CALayer(), spark = CALayer()
+    /// Everything, laid out at 40 × 16 and scaled up.
+    private let stage = CALayer()
     private var shown: DockState?
     private static let docked: CGFloat = 13      // the secondary's left edge once it holds the primary
     private static var cache: [String: CGImage] = [:]
@@ -60,7 +64,15 @@ final class DockingView: NSView {
         layer = CALayer()
         wantsLayer = true
         layer?.isGeometryFlipped = true
-        for l in [primary, glow, ring, secondary] { layer?.addSublayer(l) }
+        stage.anchorPoint = .zero
+        stage.bounds = CGRect(x: 0, y: 0, width: 40, height: 16)
+        stage.position = .zero
+        stage.transform = CATransform3DMakeScale(DockingIcon.zoom, DockingIcon.zoom, 1)
+        layer?.addSublayer(stage)
+        for l in [primary, glow, ring, secondary, spark] { stage.addSublayer(l) }
+        spark.bounds = CGRect(x: 0, y: 0, width: 14, height: 14)
+        spark.position = CGPoint(x: 17.5, y: 8)     // where the secondary's arms close on the primary's stem
+        spark.opacity = 0
         primary.frame = CGRect(x: 0, y: 0, width: 18, height: 16)
         primary.contents = Self.image("p") { c in Self.drawPrimary(c) }
         secondary.anchorPoint = CGPoint(x: 0, y: 0.5)
@@ -74,7 +86,8 @@ final class DockingView: NSView {
 
     private static func image(_ key: String, _ draw: (CGContext) -> Void) -> CGImage? {
         if let i = cache[key] { return i }
-        let i = renderImage(CGSize(width: key.hasPrefix("g") || key.hasPrefix("r") ? 16 : (key == "p" ? 18 : 22), height: 16), screenScale, draw)
+        let side: CGFloat = key.hasPrefix("k") ? 14 : (key.hasPrefix("g") || key.hasPrefix("r") ? 16 : (key == "p" ? 18 : 22))
+        let i = renderImage(CGSize(width: side, height: key.hasPrefix("k") ? 14 : 16), screenScale * DockingIcon.zoom, draw)
         cache[key] = i
         return i
     }
@@ -97,13 +110,28 @@ final class DockingView: NSView {
         c.setFillColor(NSColor(white: 1, alpha: 0.55).cgColor); c.fillEllipse(in: CGRect(x: 16, y: 6, width: 2.2, height: 2.2))
     }
 
+    /// A four-pointed spark, white at the heart and the colour at its tips.
+    private static func drawSpark(_ c: CGContext, _ hex: String) {
+        let m = CGPoint(x: 7, y: 7)
+        let p = CGMutablePath()
+        for i in 0..<8 {
+            let a = Double(i) / 8 * 2 * .pi, r: CGFloat = i % 2 == 0 ? 6.8 : 1.8
+            let q = CGPoint(x: m.x + CGFloat(cos(a)) * r, y: m.y + CGFloat(sin(a)) * r)
+            if i == 0 { p.move(to: q) } else { p.addLine(to: q) }
+        }
+        p.closeSubpath()
+        c.addPath(p); c.setFillColor(cg(hex)); c.fillPath()
+        c.setFillColor(cg("FFFFFF", 0.95)); c.fillEllipse(in: CGRect(x: m.x - 1.8, y: m.y - 1.8, width: 3.6, height: 3.6))
+    }
+
     func show(_ state: DockState, motion: Bool, delay: Double) {
         guard state != shown else { return }
         let first = shown == nil
         shown = state
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        secondary.removeAllAnimations(); glow.removeAllAnimations(); ring.removeAllAnimations()
+        secondary.removeAllAnimations(); glow.removeAllAnimations(); ring.removeAllAnimations(); spark.removeAllAnimations()
+        spark.opacity = 0
         let d = Self.docked, y: CGFloat = 8
         var rest = d, alpha: Float = 1
         switch state {
@@ -121,7 +149,7 @@ final class DockingView: NSView {
         case .refused:
             secondary.contents = Self.image("sx") { c in Self.drawSecondary(c, body: "D9534F", dye: "E8908D") }
             glow.contents = nil
-            rest = d + 9
+            rest = d + 5
         case .unsure:
             secondary.contents = Self.image("s?") { c in Self.drawSecondary(c, body: "A7B4C6", dye: "C9D2DE") }
             glow.contents = nil
@@ -144,7 +172,7 @@ final class DockingView: NSView {
         fade.fromValue = 0; fade.toValue = alpha; fade.duration = 0.22
         secondary.play(fade, "fade", delay: wait)
         switch state {
-        case .bound:
+        case .bound(let hex):
             let swim = CASpringAnimation(keyPath: "position.x")
             swim.fromValue = d + 22; swim.toValue = d
             swim.mass = 0.6; swim.stiffness = 210; swim.damping = 11; swim.initialVelocity = -4
@@ -166,12 +194,28 @@ final class DockingView: NSView {
                             keyframes("transform.scale", [0.4, 2.2], [0, 1], 0.55, timing: .easeOut)]
             r.duration = 0.55
             ring.play(r, "pulse", delay: wait + 0.34)
+            // it clicks into place: a spark where the arms close on the stem
+            spark.contents = Self.image("k" + hex) { c in Self.drawSpark(c, hex) }
+            let k = CAAnimationGroup()
+            k.animations = [keyframes("opacity", [0, 1, 0], [0, 0.25, 1], 0.38),
+                            keyframes("transform.scale", [0.2, 1.35, 0.6], [0, 0.3, 1], 0.38, timing: .easeOut),
+                            keyframes("transform.rotation.z", [0, 0.6], [0, 1], 0.38)]
+            k.duration = 0.38
+            spark.play(k, "click", delay: wait + 0.2)
+            if !first { DispatchQueue.main.asyncAfter(deadline: .now() + wait + 0.2) { Sounds.snap() } }
         case .refused:
             // in, a bump against the primary, then it backs off and shudders
-            let bump = keyframes("position.x", [d + 22, d + 1.5, d + 11, d + 7.5, d + 10, d + 9], [0, 0.38, 0.58, 0.72, 0.86, 1], 0.85)
+            let bump = keyframes("position.x", [d + 22, d + 1.5, d + 8, d + 4, d + 6, d + 5], [0, 0.38, 0.58, 0.72, 0.86, 1], 0.85)
             secondary.play(bump, "bump", delay: wait)
             let shake = keyframes("transform.rotation.z", [0.4, 0, -0.25, 0.18, -0.08, 0], [0, 0.38, 0.55, 0.7, 0.85, 1], 0.85)
             secondary.play(shake, "shake", delay: wait)
+            // the bump: a red burst where it hits the primary and is turned away
+            spark.contents = Self.image("kBAD") { c in Self.drawSpark(c, "E5484D") }
+            let k = CAAnimationGroup()
+            k.animations = [keyframes("opacity", [0, 1, 0], [0, 0.2, 1], 0.42),
+                            keyframes("transform.scale", [0.3, 1.5, 0.8], [0, 0.25, 1], 0.42, timing: .easeOut)]
+            k.duration = 0.42
+            spark.play(k, "bump", delay: wait + 0.3)
         case .unsure:
             let drift = keyframes("position.x", [d + 22, d + 4, d + 5], [0, 0.7, 1], 0.7, timing: .easeOut)
             secondary.play(drift, "drift", delay: wait)
@@ -550,9 +594,9 @@ final class HoloController: ObservableObject {
     private var hovering = false
     private var enabled = true
 
-    /// Called whenever the stain, the pointer or the setting changes.
-    func update(selected: UUID?, hovering: Bool, enabled: Bool, length: Double) {
-        let changed = selected != self.selected
+    /// Called whenever the stain, the pointer or the setting changes. It comes up only when the user picks
+    /// a stain (`picked`): the stain restored at launch, or one selected by opening a plate, stays quiet.
+    func update(selected: UUID?, hovering: Bool, enabled: Bool, length: Double, picked: Bool = false) {
         self.selected = selected; self.hovering = hovering; self.enabled = enabled
         // the pointer no longer matters: once shown it plays its scan to the end, wherever the pointer is
         if selected == nil || !enabled {
@@ -562,7 +606,7 @@ final class HoloController: ObservableObject {
         }
         if shown != nil && shown != selected { hide() }
         if shown == selected { return }
-        if changed || pending == nil { schedule(force: false, length: length) }
+        if picked { schedule(force: false, length: length) }
     }
 
     /// The selected stain's button clicked again: show it now, cooldown or not.
@@ -622,9 +666,9 @@ struct HologramProjector: View {
     /// One pass of the scan: each channel, the merge, and a moment to look at it.
     private func playLength(_ info: PreviewInfo) -> Double { 0.6 + Double(info.channels.count) * 1.6 + 4.2 }
 
-    private func sync() {
+    private func sync(picked: Bool = false) {
         holo.update(selected: anchor?.set, hovering: false, enabled: store.showHologram && store.motion,
-                    length: playLength(store.previewInfo))
+                    length: playLength(store.previewInfo), picked: picked)
     }
 
     var body: some View {
@@ -685,6 +729,7 @@ struct HologramProjector: View {
         .allowsHitTesting(false)
         .onAppear { sync() }
         .onChange(of: found?.set) { _ in sync() }
+        .onChange(of: store.stainPicked) { _ in sync(picked: true) }
         .onChange(of: store.showHologram) { _ in sync() }
         .onChange(of: store.hologramRequest) { _ in
             sync()
