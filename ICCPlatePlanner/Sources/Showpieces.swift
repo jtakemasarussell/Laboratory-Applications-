@@ -103,6 +103,8 @@ struct SpectralStrip: View {
     let motion: Bool
     /// The stain picked to paint with.
     let active: Bool
+    /// Gently moving (the app in front, Animations on).
+    var alive = false
 
     var body: some View {
         let em = Spectra.emissions(channels)
@@ -113,7 +115,7 @@ struct SpectralStrip: View {
                 Spacer(minLength: 0)
                 Text("lasers 405 · 488 · 561 · 640 nm").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            SpectrumView(emissions: em, motion: motion, active: active)
+            SpectrumView(emissions: em, motion: motion, active: active, alive: alive)
                 .frame(height: 74)
             Label(advice.text, systemImage: advice.severe ? "exclamationmark.triangle.fill" : (em.count > 1 && !Spectra.overlaps(em).isEmpty ? "info.circle" : "checkmark.circle"))
                 .font(.system(size: 11))
@@ -130,8 +132,12 @@ struct SpectrumView: NSViewRepresentable {
     let emissions: [Emission]
     let motion: Bool
     let active: Bool
+    let alive: Bool
     func makeNSView(context: Context) -> SpectrumNSView { SpectrumNSView(frame: .zero) }
-    func updateNSView(_ v: SpectrumNSView, context: Context) { v.show(emissions, motion: motion, active: active) }
+    func updateNSView(_ v: SpectrumNSView, context: Context) {
+        v.show(emissions, motion: motion, active: active)
+        v.set(alive: alive && motion)
+    }
 }
 
 final class SpectrumNSView: NSView {
@@ -142,6 +148,66 @@ final class SpectrumNSView: NSView {
     private var wanted: ([Emission], Bool)?
     private var drawn: [CALayer] = []
     private static var backs: [String: CGImage] = [:]
+    /// The parts that keep moving: the stain's laser beams, its dye curves, and a detector line.
+    private var beams: [CALayer] = []
+    private var curves: [(CAShapeLayer, String)] = []
+    private let sweep = CALayer()
+    private var alive = false
+    /// When the one-time firing ends, so the gentle loops start after it.
+    private var settledAt: CFTimeInterval = 0
+
+    /// Keep it gently moving, or still.
+    func set(alive: Bool) {
+        guard alive != self.alive else { return }
+        self.alive = alive
+        loops()
+    }
+
+    /// The gentle motion, all looping animations the window server runs: a detector line sweeping across the
+    /// wavelengths, the stain's lasers pulsing softly, its dye curves glowing up and down.
+    private func loops() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        for b in beams { b.removeAnimation(forKey: "pulse") }
+        for (c, _) in curves { c.removeAnimation(forKey: "breathe") }
+        sweep.removeAnimation(forKey: "sweep")
+        sweep.opacity = 0
+        guard alive, bounds.width > 40, !curves.isEmpty else { return }
+        let start = max(CACurrentMediaTime(), settledAt)
+        let p = plot
+        sweep.bounds = CGRect(x: 0, y: 0, width: 14, height: p.height + 4)
+        sweep.contents = Self.beam("FFFFFF", height: p.height + 4)
+        sweep.position = CGPoint(x: p.minX, y: p.midY)
+        sweep.zPosition = 5
+        if sweep.superlayer == nil { space.addSublayer(sweep) }
+        let s = CAAnimationGroup()
+        s.animations = [frames("position.x", [p.minX, p.maxX], [0, 1], 4.5, .linear), frames("opacity", [0, 0.35, 0.35, 0], [0, 0.08, 0.92, 1], 4.5)]
+        s.duration = 4.5
+        s.repeatCount = .infinity
+        s.beginTime = start + 0.6
+        s.fillMode = .backwards
+        sweep.add(s, forKey: "sweep")
+        for (k, b) in beams.enumerated() {
+            let a = CABasicAnimation(keyPath: "opacity")
+            a.fromValue = 0.22; a.toValue = 0.7
+            a.duration = 1.6
+            a.autoreverses = true
+            a.repeatCount = .infinity
+            a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            a.beginTime = start + Double(k) * 0.55
+            b.add(a, forKey: "pulse")
+        }
+        for (k, (c, hex)) in curves.enumerated() {
+            let a = CABasicAnimation(keyPath: "fillColor")
+            a.fromValue = cg(hex, 0.22); a.toValue = cg(hex, 0.46)
+            a.duration = 2.2
+            a.autoreverses = true
+            a.repeatCount = .infinity
+            a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            a.beginTime = start + Double(k) * 0.8
+            c.add(a, forKey: "breathe")
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -185,6 +251,8 @@ final class SpectrumNSView: NSView {
         space.frame = bounds
         drawn.forEach { $0.removeFromSuperlayer() }
         drawn = []
+        beams = []
+        curves = []
         back.frame = bounds
         let key = "\(Int(size.width))x\(Int(size.height))"
         if Self.backs[key] == nil { Self.backs[key] = renderImage(size, screenScale) { c in self.drawBack(c, size) } }
@@ -221,6 +289,7 @@ final class SpectrumNSView: NSView {
             beam.opacity = 0.3
             space.addSublayer(beam)
             drawn.append(beam)
+            beams.append(beam)
             if animate { beam.run(frames("opacity", [0, 0, 1, 0.3], [0, 0.01, 0.2, 1], 0.9), "fire", delay: t) }
         }
         // the curves
@@ -233,6 +302,7 @@ final class SpectrumNSView: NSView {
             s.lineWidth = 1.4
             s.lineJoin = .round
             lay(s)
+            curves.append((s, d.hex))
             let at = (fireAt[d.laser] ?? 0.15) + 0.12 + Double(e.firstIndex(of: d) ?? 0) * 0.05
             lastDone = max(lastDone, at + 0.6)
             if animate {
@@ -271,6 +341,9 @@ final class SpectrumNSView: NSView {
                 s.run(frames("opacity", [0, 0, 1, 0.55, 1, 0.8], [0, 0.01, 0.25, 0.5, 0.75, 1], 1.3), "glow", delay: lastDone)
             }
         }
+        // the gentle motion carries on once the firing is over
+        settledAt = CACurrentMediaTime() + (animate ? lastDone + 0.4 : 0)
+        loops()
     }
 
     /// The dark strip: faint gridlines, the visible spectrum along the bottom, the four laser lines dashed,

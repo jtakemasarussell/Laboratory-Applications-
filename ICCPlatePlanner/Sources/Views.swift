@@ -572,7 +572,7 @@ struct StainCard: View {
             // its spectrum, on every card; picking the stain to paint with plays it (the lasers fire, the
             // light rises, any overlap glows), and so does changing its dyes
             if !report.channels.isEmpty {
-                SpectralStrip(channels: report.channels, motion: store.motion, active: store.tool == .paint(setID))
+                SpectralStrip(channels: report.channels, motion: store.motion, active: store.tool == .paint(setID), alive: store.ambient)
             }
         }
         .textFieldStyle(.roundedBorder)
