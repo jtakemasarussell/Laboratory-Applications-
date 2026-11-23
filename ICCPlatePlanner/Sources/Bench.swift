@@ -78,7 +78,7 @@ struct FridgeButton: View {
             .shadow(color: Color(hex: "2F7FD0").opacity(0.12), radius: 4, y: 1.5)
             .contentShape(Capsule())
             // it is cold: a little mist spills out from behind it
-            .background(ColdMist(alive: store.ambient).padding(.horizontal, -10).padding(.vertical, -6).allowsHitTesting(false))
+            .background(ColdMist(alive: store.ambient).padding(.horizontal, -10).padding(.vertical, -6).allowsHitTesting(false).accessibilityHidden(true))
         }
         .buttonStyle(SquishStyle(on: store.motion))
         .help(secondaries ? "Take a secondary or counterstain from the fridge, or add a new tube" : "Take a primary antibody from the fridge, or add a new tube")
@@ -233,7 +233,7 @@ struct FridgeRack: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
                 )
                 // the door swings open and a puff of cold mist rolls out
-                .overlay(FridgeDoor(motion: motion).allowsHitTesting(false))
+                .overlay(FridgeDoor(motion: motion).allowsHitTesting(false).accessibilityHidden(true))
             }
             if !secondaries {
                 HStack(spacing: 10) {

@@ -152,8 +152,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar().overlay(LightsDim())
-            OutputStrip().overlay(LightsDim())
+            HeaderBar().overlay(LightsDim().accessibilityHidden(true))
+            OutputStrip().overlay(LightsDim().accessibilityHidden(true))
             HStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -179,13 +179,13 @@ struct ContentView: View {
                     .animation(store.animations ? .spring(response: 0.42, dampingFraction: 0.82) : nil, value: store.exp.sets.map { $0.id })
                 }
                 .frame(width: 580)
-                .overlay(LightsDim())
+                .overlay(LightsDim().accessibilityHidden(true))
                 GeometryReader { geo in
                     ScrollView([.vertical, .horizontal]) {
                         VStack(alignment: .leading, spacing: 14) {
                             PlateSection()
                                 .zIndex(1)      // the hologram floats over the cards below
-                            SummarySection().overlay(LightsDim())
+                            SummarySection().overlay(LightsDim().accessibilityHidden(true))
                         }
                         .frame(width: max(geo.size.width - 16, 712))   // never narrower than the plate
                         .fixedSize(horizontal: false, vertical: true)
@@ -209,9 +209,9 @@ struct ContentView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: store.toast?.id)
             .allowsHitTesting(false)
         }
-        .overlay(FxOverlay(store: store).allowsHitTesting(false))
+        .overlay(FxOverlay(store: store).allowsHitTesting(false).accessibilityHidden(true))
         .task { store.arrangeSoon(); if store.persist { DockPlate.shared.update(store) } }          // cards saved before secondaries were kept in order line up too
-        .overlay(ConfettiLayer())
+        .overlay(ConfettiLayer().accessibilityHidden(true))
         .tint(Brand.navy)
         .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room
         // switching the room rebuilds every view, so none keeps the old colours (views whose inputs did not
@@ -419,7 +419,7 @@ struct ExperimentSection: View {
                     }
                     .padding(.leading, 4)
                     if s.hasDay0 {
-                        SampleTimeline(day0: s.day0, fixed: store.exp.fixedDate(s, store.settings), staining: store.exp.date)
+                        SampleTimeline(day0: s.day0, fixed: store.exp.fixedDate(s, store.settings), staining: store.exp.date).accessibilityHidden(true)
                             .padding(.leading, 4).padding(.top, 2)
                     }
                 }
@@ -500,6 +500,7 @@ struct StainCard: View {
                             + set.secondaries.map { "\($0.name):\($0.dilution)" }.joined(separator: ","),
                         motion: store.motion, alive: store.ambient)
                     .frame(width: 16, height: 32)
+                    .accessibilityHidden(true)
                     .help("This stain's mix: blocking buffer with its antibodies and dyes")
                 Text("Volume").foregroundStyle(.secondary)
                 TextField(fmtNum(auto), value: binding.volumeOverride, format: plain)
@@ -844,15 +845,17 @@ struct PlateSection: View {
                 }
             }
             .frame(height: 14)
+            .accessibilityHidden(true)
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     ForEach(0..<8, id: \.self) { i in
                         Embossed(text: rowLetters[i]).frame(width: letterW, height: ch)
                     }
                 }
+                .accessibilityHidden(true)
                 PlateGrid(paint: store.paint, hover: hover, cw: cw, ch: ch)
                     // the wells' depth, leaning with the plate
-                    .overlay(DeepWells(tilt: tilt, cw: cw, ch: ch).allowsHitTesting(false))
+                    .overlay(DeepWells(tilt: tilt, cw: cw, ch: ch).allowsHitTesting(false).accessibilityHidden(true))
                     .background(
                         // the raised deck the wells sit in
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -864,7 +867,7 @@ struct PlateSection: View {
             }
         }
         .padding(.top, 8).padding(.bottom, 12).padding(.leading, 6).padding(.trailing, 12)
-        .background(PlateShell())
+        .background(PlateShell().accessibilityHidden(true))
     }
 
 }
@@ -905,14 +908,20 @@ struct PlateGrid: View {
         }
         // in the microscope room the stained wells glow from behind
         .background(store.darkRoom ? RoomGlow(wells: (0..<96).compactMap { w in wells[w].flatMap { ids.firstIndex(of: $0) }.map { (w, fills[$0]) } }, cw: cw, ch: ch)
-                        .allowsHitTesting(false).padding(-8) : nil)
+                        .allowsHitTesting(false).accessibilityHidden(true).padding(-8) : nil)
         .overlay(GlintLane(stained: (0..<96).filter { w in wells[w].map { ids.contains($0) } ?? false }, cw: cw, ch: ch, active: store.ambient && spot == nil)
-                    .allowsHitTesting(false))
+                    .allowsHitTesting(false).accessibilityHidden(true))
         .overlay(SpotVeil(wells: spot.map { id in (0..<96).filter { wells[$0] == id } } ?? [],
                           hex: spot.flatMap { id in sets.firstIndex { $0.id == id } }.map { setAccentHex(sets[$0], $0) } ?? "4A78B8",
                           cw: cw, ch: ch, motion: store.motion)
-                    .allowsHitTesting(false))
-        .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch))
+                    .allowsHitTesting(false).accessibilityHidden(true))
+        .overlay(HologramProjector(hover: hover, holo: HoloController.shared, cw: cw, ch: ch).accessibilityHidden(true))
+        // to accessibility (VoiceOver, and the many apps that ask what is under the pointer) the grid is one
+        // element: describing 96 wells and their labels to every such question, as the pane scrolled under the
+        // pointer, took half the main thread and made scrolling lag
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("96-well plate")
+        .accessibilityValue("\((0..<96).filter { w in wells[w].map { ids.contains($0) } ?? false }.count) wells stained")
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
@@ -1085,6 +1094,7 @@ struct PanelStrip: View {
                         VerdictIcon(verdict: c.verdict, why: c.reasons.joined(separator: "\n"), size: 11.5)
                         DockingIcon(state: dockState(c), motion: store.motion, delay: Double(k) * 0.12)
                             .frame(width: DockingIcon.size.width, height: DockingIcon.size.height)
+                            .accessibilityHidden(true)
                             .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
                             .help(dockHelp(c))
                         Text(c.marker).font(.system(size: 11.5, weight: .bold)).foregroundColor(Brand.ink)
@@ -1165,6 +1175,7 @@ struct SummarySection: View {
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(CardBackground())
+        .accessibilityElement(children: .combine)
     }
 
     var body: some View {
@@ -1191,6 +1202,7 @@ struct SummarySection: View {
                             Pill(text: "\(store.exp.wellCount(set)) wells · \(fmtNum(store.exp.volume(set, store.settings))) µL", color: setAccent(set, idx), roll: store.motion)
                         }
                         .padding(.horizontal, 6).padding(.vertical, 3)
+                        .accessibilityElement(children: .combine)
                         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(lit ? setAccent(set, idx).opacity(0.1) : .clear))
                         .contentShape(Rectangle())
                         .onHover { inside in

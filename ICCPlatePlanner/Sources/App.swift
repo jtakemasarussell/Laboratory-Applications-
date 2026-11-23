@@ -1101,7 +1101,9 @@ func lagCheck(_ platePath: String) {
     if a.contains("--scroll-bench") {
         // scroll the stain cards up and down as a trackpad would, 60 times a second
         func scrollViews(_ v: NSView) -> [NSScrollView] { ((v as? NSScrollView).map { [$0] } ?? []) + v.subviews.flatMap(scrollViews) }
-        let left = scrollViews(host).filter { $0.frame.width < 700 && ($0.documentView?.frame.height ?? 0) > $0.frame.height }.first
+        // --scroll-right: the plate and summary pane instead of the stain cards
+        let right = a.contains("--scroll-right")
+        let left = scrollViews(host).filter { ($0.frame.width < 700) != right && ($0.documentView?.frame.height ?? 0) > $0.frame.height }.first
         guard let sv = left else { print("no scroll view"); return }
         print("scrolling a column \(Int(sv.documentView?.frame.height ?? 0)) pt tall")
         var t = 0.0
@@ -1111,6 +1113,19 @@ func lagCheck(_ platePath: String) {
             let y = (1 - cos(t * 0.9)) / 2 * maxY
             sv.contentView.scroll(to: NSPoint(x: 0, y: y))
             sv.reflectScrolledClipView(sv.contentView)
+            // --ax: another app asking, as accessibility clients do, which element is under a pointer resting
+            // over the pane (what a translator, assistant or password manager does while you scroll)
+            if a.contains("--ax"), let w = sv.window {
+                let local = sv.convert(NSPoint(x: sv.bounds.midX, y: sv.bounds.midY), to: nil)
+                _ = NSApp.accessibilityHitTest(w.convertPoint(toScreen: local))
+            }
+            // --hover: the pointer resting over the pane while it scrolls, so the plate under it keeps changing
+            // (what a trackpad scroll does): the tilt follows it as the pointer handler would
+            if a.contains("--hover"), let tilt = TiltModel.current {
+                tilt.x = CGFloat(sin(t * 1.3)) * 0.6
+                tilt.y = CGFloat(cos(t * 0.9)) * 0.8
+                if !tilt.lit { tilt.lit = true }
+            }
         }
         RunLoop.main.add(tick, forMode: .common)
         phase("scrolling the stain cards (10 s)", 10)

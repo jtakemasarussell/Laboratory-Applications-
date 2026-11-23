@@ -117,6 +117,7 @@ struct SpectralStrip: View {
             }
             SpectrumView(emissions: em, motion: motion, active: active, alive: alive)
                 .frame(height: 74)
+                .accessibilityHidden(true)
             Label(advice.text, systemImage: advice.severe ? "exclamationmark.triangle.fill" : (em.count > 1 && !Spectra.overlaps(em).isEmpty ? "info.circle" : "checkmark.circle"))
                 .font(.system(size: 11))
                 .foregroundColor(advice.severe ? Color(hex: "B26A00") : .secondary)
