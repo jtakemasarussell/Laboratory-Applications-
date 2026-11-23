@@ -305,6 +305,7 @@ final class Store: ObservableObject {
             // putting secondaries in their primaries' order is not an edit: no undo step, no flight
             if arranging { save(); return }
             recordUndo(oldValue); save(); fxAfterChange(oldValue); syncTubes(oldValue); arrangeSoon()
+            if persist { DockPlate.shared.update(self) }
         }
     }
     @Published var settings: Settings { didSet { save() } }
@@ -338,6 +339,8 @@ final class Store: ObservableObject {
     @Published var hologramRequest = 0
     /// Bumped when the user clicks a stain to paint with: only then does its hologram come up.
     @Published var stainPicked = 0
+    /// The plate out of focus just after a plate is opened (points of blur); it sharpens as the lid lifts.
+    @Published var plateBlur: CGFloat = 0
     /// Wells painted or erased during the current drag, shown at once on the plate and committed to the
     /// plan when the drag ends: painting then redraws only the plate, not every card in the window.
     let paint = PaintBuffer()
@@ -677,8 +680,17 @@ final class Store: ObservableObject {
         copy.colorHex = nil
         copy.colorHex = freshStainHex(joining: e.sets, at: i + 1) ?? setColorHex(i + 1)   // and the copy gets its own
         e.sets.insert(copy, at: i + 1)
+        let fx = FxCenter.shared
+        let from = fx.cardFrames[id]
         exp = e
         tool = .paint(copy.id)
+        // once the new card is laid out: the source divides into it
+        if motion, fx.usable, let from {
+            let hex = setAccentHex(exp.sets[i + 1], i + 1), newID = copy.id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                if let to = fx.cardFrames[newID] { fx.view?.divide(from: from, to: to, hex: hex) }
+            }
+        }
     }
 
     /// Typing a label into a well replaces any experiment tag stamped there.
@@ -772,7 +784,11 @@ final class Store: ObservableObject {
     func removeSet(_ id: UUID) {
         var e = exp
         for i in e.wells.indices where e.wells[i] == id { e.wells[i] = nil }
-        if let k = e.sets.firstIndex(where: { $0.id == id }) { e.keepColours(from: k + 1) }   // the stains after it keep their colours
+        if let k = e.sets.firstIndex(where: { $0.id == id }) {
+            e.keepColours(from: k + 1)                                  // the stains after it keep their colours
+            let fx = FxCenter.shared
+            if motion, fx.usable, let frame = fx.cardFrames[id] { fx.view?.lyse(frame, hex: setAccentHex(e.sets[k], k)) }
+        }
         e.sets.removeAll { $0.id == id }
         e.blockingOverride = nil
         exp = e
@@ -880,6 +896,7 @@ final class Store: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 self?.fxLid(lowering: false, holdFor: 1.95)
                 self?.fxThaw()
+                self?.fxFocus(hold: 2.25)            // under the lid, the plate comes into focus as it lifts
             }
             selectedWell = nil
             duplicateSource = nil
@@ -1363,6 +1380,24 @@ extension Store {
     }
 
     /// The plate's lid: lifted off an opened plate, lowered onto a saved one.
+    /// The plate comes into focus, as a microscope is focused: blurred under the lid, sharpening as it lifts.
+    /// (One blur on the plate for under a second; the effects layer cannot blur what lies beneath it.)
+    func fxFocus(hold: Double) {
+        guard motion else { return }
+        plateBlur = 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
+            withAnimation(.easeOut(duration: 0.85)) { self?.plateBlur = 0 }
+        }
+    }
+
+    /// Switching from one stain to another: the pipette changes its tip.
+    func fxTipChange(to id: UUID) {
+        let fx = FxCenter.shared
+        guard motion, fx.usable, case .paint(let old) = tool, old != id,
+              let a = exp.sets.firstIndex(where: { $0.id == old }), let b = exp.sets.firstIndex(where: { $0.id == id }) else { return }
+        fx.view?.tipChange(by: fx.plateFrame, oldHex: setAccentHex(exp.sets[a], a), newHex: setAccentHex(exp.sets[b], b))
+    }
+
     func fxLid(lowering: Bool, holdFor: Double = 0) {
         let fx = FxCenter.shared
         guard motion, fx.usable else { return }

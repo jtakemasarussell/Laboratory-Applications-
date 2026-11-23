@@ -122,6 +122,9 @@ final class ExportScanController: NSObject, NSWindowDelegate {
         finished?(); finished = nil
         Sounds.scanning(false)
         Sounds.done()
+        // the workbook flies down into the Dock, and the Dock's plate drops its progress bar
+        if r.motion { FileFlight.play(from: window, file: r.url) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { DockPlate.shared.setProgress(nil) }
     }
 
     private func openFile() {
@@ -532,6 +535,7 @@ final class ExportScanView: AmbientLayerView {
             if l.opacity != o { l.opacity = o }
         }
         bar.bounds.size.width = 270 * CGFloat(doneCount) / CGFloat(n)
+        DockPlate.shared.setProgress(Double(doneCount) / Double(n))
         let w = wells[k]
         if w.index != shownWell {
             shownWell = w.index

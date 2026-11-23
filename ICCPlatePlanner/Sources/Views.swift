@@ -210,7 +210,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
         }
         .overlay(FxOverlay(store: store).allowsHitTesting(false))
-        .task { store.arrangeSoon() }          // cards saved before secondaries were kept in order line up too
+        .task { store.arrangeSoon(); if store.persist { DockPlate.shared.update(store) } }          // cards saved before secondaries were kept in order line up too
         .overlay(ConfettiLayer())
         .tint(Brand.navy)
         .preferredColorScheme(store.darkRoom ? .dark : .light)   // a white page with navy accents, or the microscope room
@@ -716,6 +716,7 @@ struct PlateSection: View {
                         }
                     }
                     TiltPlate(on: store.motion, model: tilt, hover: hover) { plateBody }
+                        .blur(radius: store.plateBlur)
                         .fxPlate()          // the lid's outline: the plate lying flat, outside the tilt
                         // The marker the effects aim at sits outside the tilt, over where the grid lies flat
                         // (plateBody's padding, then the row letters; the column numbers and their gap).
@@ -809,7 +810,10 @@ struct PlateSection: View {
         let on = store.tool == t
         return Button {
             // the selected stain clicked again: show its hologram now
-            if on, case .paint = t { store.hologramRequest += 1 } else if case .paint = t { store.stainPicked += 1 }
+            if on, case .paint = t { store.hologramRequest += 1 } else if case .paint(let id) = t {
+                store.stainPicked += 1
+                store.fxTipChange(to: id)
+            }
             store.tool = t
         } label: {
             HStack(spacing: 6) { label() }

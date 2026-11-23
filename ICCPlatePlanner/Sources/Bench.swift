@@ -57,11 +57,30 @@ struct FridgeButton: View {
 
     var body: some View {
         Button { open.wrappedValue.toggle() } label: {
-            Label(secondaries ? "4 °C fridge · secondary / counterstain" : "4 °C fridge · primary antibody", systemImage: "refrigerator")
-                .font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 8) {
+                // the fridge, in a small round chip
+                Image(systemName: "refrigerator.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(LinearGradient(colors: [Color(hex: "6FB7F2"), Color(hex: "2F7FD0")], startPoint: .top, endPoint: .bottom))
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color(hex: "E3F1FD")))
+                    .overlay(Circle().stroke(Color(hex: "B9DBF6"), lineWidth: 0.8))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("4 °C Fridge").font(.system(size: 12, weight: .semibold)).foregroundColor(Brand.ink)
+                    Text(secondaries ? "Secondaries & counterstains" : "Primary antibodies").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
+            }
+            .padding(.leading, 5).padding(.trailing, 12).padding(.vertical, 4)
+            .background(Capsule().fill(LinearGradient(colors: Theme.dark ? [Color(hex: "22344A"), Color(hex: "1A2738")] : [.white, Color(hex: "EAF4FD")],
+                                                       startPoint: .top, endPoint: .bottom)))
+            .overlay(Capsule().strokeBorder(Color(hex: "9CCBF2").opacity(0.55), lineWidth: 1))
+            .shadow(color: Color(hex: "2F7FD0").opacity(0.12), radius: 4, y: 1.5)
+            .contentShape(Capsule())
+            // it is cold: a little mist spills out from behind it
+            .background(ColdMist(alive: store.ambient).padding(.horizontal, -10).padding(.vertical, -6).allowsHitTesting(false))
         }
-        .buttonStyle(.borderless)
-        .foregroundColor(Brand.navy)
+        .buttonStyle(SquishStyle(on: store.motion))
         .help(secondaries ? "Take a secondary or counterstain from the fridge, or add a new tube" : "Take a primary antibody from the fridge, or add a new tube")
         .popover(isPresented: open.projectedValue, arrowEdge: .bottom) {
             FridgeRack(secondaries: secondaries, setID: setID, motion: store.motion) {

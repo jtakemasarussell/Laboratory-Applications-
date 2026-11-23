@@ -139,14 +139,54 @@ func fxShot2(_ platePath: String, _ out: String) {
     fw.orderOut(nil)
     wait(0.3)
 
-    // opening a plate: frozen under its lid, the frost melts off the lid, then the lid comes off
+    // opening a plate: frozen under its lid, the frost melts off the lid, then the lid comes off and the
+    // plate comes into focus
     win.orderFrontRegardless()
     store.fxLid(lowering: false, holdFor: 1.95)
     store.fxThaw()
+    store.fxFocus(hold: 2.25)
     wait(0.6); shot("open-frost")
     wait(1.1); shot("open-melt")
     wait(0.75); shot("open-lift")
+    wait(0.25); shot("open-focus")
     wait(1.2)
+
+    // the pointer over a painted well: it wobbles
+    if let w = stained.dropFirst(3).first, let id = store.exp.wells[w], let k = store.exp.sets.firstIndex(where: { $0.id == id }) {
+        fx.view?.wobble(at: fx.wellCenter(w), hex: setAccentHex(store.exp.sets[k], k), cw: fx.cw, ch: fx.ch)
+        wait(0.12); shot("wobble")
+        wait(0.6)
+    }
+
+    // switching stains: a tip change
+    store.tool = .paint(store.exp.sets[0].id)
+    wait(0.3)
+    store.fxTipChange(to: store.exp.sets[min(1, store.exp.sets.count - 1)].id)
+    store.tool = .paint(store.exp.sets[min(1, store.exp.sets.count - 1)].id)
+    wait(0.55); shot("tip-eject")
+    wait(0.6); shot("tip-snap")
+    wait(1.0)
+
+    // duplicating a stain: it divides; removing it: it lyses
+    let before = store.exp.sets.count
+    store.duplicateSet(store.exp.sets[0].id)
+    wait(0.35); shot("divide-a")
+    wait(0.45); shot("divide")
+    wait(0.3); shot("divide-b")
+    wait(0.9)
+    if store.exp.sets.count > before { store.removeSet(store.exp.sets[1].id) }
+    wait(0.2); shot("lyse")
+    wait(1.0)
+
+    // the Dock icon, and with an export under way
+    DockPlate.shared.load(store)
+    for (name, p) in [("dock", nil), ("dock-progress", 0.55)] as [(String, Double?)] {
+        DockPlate.shared.devProgress(p)
+        if let img = DockPlate.shared.picture(), let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: out + name + ".png"))
+        }
+    }
+    DockPlate.shared.devProgress(nil)
 
     // deep wells, the plate leaning one way and then the other
     if let t = TiltModel.current {
@@ -158,7 +198,12 @@ func fxShot2(_ platePath: String, _ out: String) {
         wait(0.4)
     }
 
-    // a stain card on its own: its spectrum when picked, and the mixing tube when a dilution changes
+    // a stain card on its own: its spectrum when picked, and the mixing tube when a dilution changes;
+    // its primaries untouched for five weeks, so the fridge button is frosted
+    let longAgo = Date().addingTimeInterval(-35 * 86400).timeIntervalSince1970
+    var log = UserDefaults.standard.dictionary(forKey: "freezerLastUsed") ?? [:]
+    for p in store.exp.sets[0].primaries { log[p.name] = longAgo }
+    UserDefaults.standard.set(log, forKey: "freezerLastUsed")
     store.tool = .paint(store.exp.sets[0].id)
     let card = NSHostingView(rootView: StainCard(setID: store.exp.sets[0].id, index: 0).environmentObject(store).frame(width: 548))
     card.layoutSubtreeIfNeeded()
@@ -207,7 +252,8 @@ func fxShot2(_ platePath: String, _ out: String) {
     ExportScanController.shared.devSkip()
     wait(0.75)
     if let w = NSApp.windows.first(where: { $0 !== win && $0.isVisible && $0 !== fw }) { shot("printout-mid", w) }
+    if let w = NSApp.windows.first(where: { $0.level == .statusBar && $0.isVisible }) { shot("flight", w) }
     wait(1.0)
-    if let w = NSApp.windows.first(where: { $0 !== win && $0.isVisible && $0 !== fw }) { shot("printout", w) }
+    if let w = NSApp.windows.first(where: { $0 !== win && $0.isVisible && $0 !== fw && $0.level != .statusBar }) { shot("printout", w) }
     print("done")
 }

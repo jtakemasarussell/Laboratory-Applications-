@@ -423,9 +423,27 @@ final class LoupeController {
 
     private func handle(_ e: NSEvent) {
         guard let v = view, let win = v.window, e.window === win else { return }
-        guard e.modifierFlags.contains(.option) else { hide(); return }
         let q = v.convert(win.mouseLocationOutsideOfEventStream, from: nil)
-        look(at: CGPoint(x: q.x, y: v.bounds.height - q.y))
+        let p = CGPoint(x: q.x, y: v.bounds.height - q.y)
+        guard e.modifierFlags.contains(.option) else { hide(); wobble(p, e); return }
+        look(at: p)
+    }
+
+    /// The well the pointer last rippled, so each well wobbles once as the pointer comes onto it.
+    private var lastWobble: Int?
+
+    private func wobble(_ p: CGPoint, _ e: NSEvent) {
+        guard e.type == .mouseMoved, NSEvent.pressedMouseButtons == 0 else { return }
+        let fx = FxCenter.shared
+        guard fx.on, let store = fx.store, store.ambient else { lastWobble = nil; return }
+        let g = fx.gridFrame
+        guard g.width > 0, g.contains(p) else { lastWobble = nil; return }
+        let j = min(11, Int((p.x - g.minX) / fx.cw)), i = min(7, Int((p.y - g.minY) / fx.ch))
+        let w = i * 12 + j
+        guard w != lastWobble else { return }
+        lastWobble = w
+        guard let id = store.exp.wells[w], let k = store.exp.sets.firstIndex(where: { $0.id == id }) else { return }
+        view?.wobble(at: fx.wellCenter(w), hex: setAccentHex(store.exp.sets[k], k), cw: fx.cw, ch: fx.ch)
     }
 
     /// Shows the loupe for the point `p` (the effects layer's top-down coordinates), or hides it.
@@ -938,5 +956,267 @@ enum DyeFlash {
     static func isFresh(_ fluor: Fluor) -> Bool {
         guard let t = fresh[fluor.name] else { return false }
         return Date().timeIntervalSince(t) < 2
+    }
+}
+
+// MARK: - Liquid wobble, focus pull, tip change, cell division and lysis
+
+extension FxView {
+    /// The pointer passing over a painted well: the stain's surface ripples once.
+    func wobble(at p: CGPoint, hex: String, cw: CGFloat, ch: CGFloat) {
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let box = Self.wellBox(cw: cw, ch: ch)
+        // the surface catching the light, squashing and springing back
+        let s = CALayer()
+        s.bounds = CGRect(x: 0, y: 0, width: box.width - 6, height: box.height - 6)
+        s.cornerRadius = 6
+        s.contents = Self.image("wob\(Int(box.width))x\(Int(box.height))", s.bounds.size) { c in
+            let r = CGRect(origin: .zero, size: CGSize(width: box.width - 6, height: box.height - 6))
+            if let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  colors: [cg("FFFFFF", 0.55), cg("FFFFFF", 0.12), cg("FFFFFF", 0)] as CFArray, locations: [0, 0.45, 1]) {
+                c.drawRadialGradient(g, startCenter: CGPoint(x: r.width * 0.38, y: r.height * 0.32), startRadius: 0,
+                                     endCenter: CGPoint(x: r.width * 0.45, y: r.height * 0.45), endRadius: r.width * 0.6, options: [])
+            }
+        }
+        s.position = p
+        s.zPosition = 8
+        s.opacity = 0
+        root.addSublayer(s)
+        let d = 0.55
+        let g = CAAnimationGroup()
+        g.animations = [frames("transform.scale.x", [1, 1.05, 0.97, 1.02, 1], [0, 0.2, 0.45, 0.7, 1], d),
+                        frames("transform.scale.y", [1, 0.95, 1.03, 0.99, 1], [0, 0.2, 0.45, 0.7, 1], d),
+                        frames("opacity", [0, 0.9, 0.6, 0], [0, 0.15, 0.6, 1], d)]
+        g.duration = d
+        s.run(g, "wobble")
+        expire(s, after: d + 0.05)
+        // and a faint ring spreading across it
+        let ring = CAShapeLayer()
+        ring.path = CGPath(ellipseIn: CGRect(x: -8, y: -8, width: 16, height: 16), transform: nil)
+        ring.fillColor = nil
+        ring.strokeColor = cg(hex, 0.9)
+        ring.lineWidth = 1.2
+        ring.position = p
+        ring.zPosition = 8
+        ring.opacity = 0
+        root.addSublayer(ring)
+        let rg = CAAnimationGroup()
+        rg.animations = [frames("transform.scale", [0.4, 2.1], [0, 1], d, .easeOut), frames("opacity", [0.8, 0], [0, 1], d)]
+        rg.duration = d
+        ring.run(rg, "ring")
+        expire(ring, after: d + 0.05)
+    }
+
+    /// Switching stains: beside the plate, the pipette ejects its used tip with a click into a small waste
+    /// bin, and a fresh tip snaps on.
+    func tipChange(by plate: CGRect, oldHex: String, newHex: String) {
+        guard plate.width > 0 else { return }
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let P = CGPoint(x: plate.maxX - 14, y: plate.midY - 20)
+        let bodySize = CGSize(width: 30, height: 46), tipSize = CGSize(width: 14, height: 26)
+        let tipAt = CGPoint(x: P.x, y: P.y + bodySize.height / 2 + tipSize.height / 2 - 2)
+        let binAt = CGPoint(x: P.x + 40, y: P.y + 52)
+        let total = 1.75
+        func show(_ l: CALayer, from: Double, until: Double) {
+            l.opacity = 0
+            l.run(frames("opacity", [0, 0, 1, 1, 0], [0, from / total, (from + 0.15) / total, until / total, min(1, (until + 0.25) / total)], total), "show")
+        }
+        let body = CALayer()
+        body.bounds = CGRect(origin: .zero, size: bodySize)
+        body.contents = Self.image("tcb\(newHex)", bodySize) { c in Self.drawTipless(c, size: bodySize, hex: newHex) }
+        body.position = P
+        body.zPosition = 30
+        let bin = CALayer()
+        bin.bounds = CGRect(x: 0, y: 0, width: 26, height: 26)
+        bin.contents = Self.image("tcbin", bin.bounds.size) { c in Self.drawBin(c) }
+        bin.position = binAt
+        bin.zPosition = 29
+        let old = CALayer(), fresh = CALayer()
+        for (l, hex) in [(old, oldHex), (fresh, newHex)] {
+            l.bounds = CGRect(origin: .zero, size: tipSize)
+            l.contents = Self.image("tct\(hex)", tipSize) { c in Self.drawTip(c, size: tipSize, hex: hex) }
+            l.position = tipAt
+            l.zPosition = 31
+        }
+        for l in [bin, body, old, fresh] { root.addSublayer(l) }
+        show(body, from: 0, until: 1.45)
+        show(bin, from: 0, until: 1.45)
+        // the old tip flicks off into the bin
+        old.opacity = 0
+        let path = CGMutablePath()
+        path.move(to: tipAt)
+        path.addQuadCurve(to: CGPoint(x: binAt.x, y: binAt.y - 6), control: CGPoint(x: tipAt.x + 30, y: tipAt.y - 30))
+        let fly = CAKeyframeAnimation(keyPath: "position")
+        fly.path = path
+        let g = CAAnimationGroup()
+        g.animations = [fly, frames("transform.rotation.z", [0, 2.6], [0, 1], 0.5), frames("opacity", [1, 1, 0], [0, 0.85, 1], 0.5)]
+        g.duration = 0.5
+        g.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        old.run(frames("opacity", [0, 1], [0, 1], 0.15), "in")
+        old.run(g, "eject", delay: 0.35)
+        bin.run(frames("transform.scale", [1, 1.12, 0.96, 1], [0, 0.3, 0.65, 1], 0.35), "catch", delay: 0.85)
+        // a fresh tip snaps on
+        let snap = CAAnimationGroup()
+        snap.animations = [frames("position.y", [tipAt.y + 22, tipAt.y - 1.5, tipAt.y], [0, 0.75, 1], 0.28, .easeOut),
+                           frames("opacity", [0, 1, 1], [0, 0.4, 1], 0.28)]
+        snap.duration = 0.28
+        fresh.opacity = 0
+        fresh.run(snap, "snap", delay: 1.0)
+        fresh.run(frames("opacity", [1, 1, 0], [0, 0.55, 1], 0.6), "out", delay: 1.28)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { Sounds.pipette() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.22) { Sounds.pipette() }
+        for l in [body, bin, old, fresh] { expire(l, after: total + 0.1) }
+    }
+
+    /// The pipette without its tip: plunger, body with the stain's band, and the nozzle.
+    private static func drawTipless(_ c: CGContext, size: CGSize, hex: String) {
+        let u = size.width / 30, mid = size.width / 2
+        let line = cg("5F6B7C", 0.85)
+        let plunger = CGRect(x: mid - 4 * u, y: 1 * u, width: 8 * u, height: 6 * u)
+        c.addPath(CGPath(roundedRect: plunger, cornerWidth: 2 * u, cornerHeight: 2 * u, transform: nil)); c.setFillColor(cg("D5DCE5")); c.fillPath()
+        c.addPath(CGPath(roundedRect: plunger, cornerWidth: 2 * u, cornerHeight: 2 * u, transform: nil)); c.setStrokeColor(line); c.setLineWidth(u); c.strokePath()
+        let body = CGRect(x: mid - 9 * u, y: 6.5 * u, width: 18 * u, height: 26 * u)
+        let bp = CGPath(roundedRect: body, cornerWidth: 5 * u, cornerHeight: 5 * u, transform: nil)
+        c.saveGState(); c.addPath(bp); c.clip()
+        if let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!, colors: [cg("8F9BAC"), cg("F4F7FA"), cg("C3CCD8"), cg("7D899B")] as CFArray, locations: [0, 0.35, 0.65, 1]) {
+            c.drawLinearGradient(g, start: CGPoint(x: body.minX, y: 0), end: CGPoint(x: body.maxX, y: 0), options: [])
+        }
+        c.setFillColor(cg(hex)); c.fill(CGRect(x: body.minX, y: 13 * u, width: body.width, height: 5 * u))
+        c.restoreGState()
+        c.addPath(bp); c.setStrokeColor(line); c.setLineWidth(u); c.strokePath()
+        let nozzle = CGRect(x: mid - 3 * u, y: body.maxY - 1 * u, width: 6 * u, height: size.height - body.maxY + 1 * u)
+        c.setFillColor(cg("B7C2D0")); c.fill(nozzle)
+        c.setStrokeColor(line); c.setLineWidth(u); c.stroke(nozzle)
+    }
+
+    /// A frosted tip holding a bead of the stain.
+    private static func drawTip(_ c: CGContext, size: CGSize, hex: String) {
+        let mid = size.width / 2
+        let cone = CGMutablePath()
+        cone.move(to: CGPoint(x: mid - 6, y: 1)); cone.addLine(to: CGPoint(x: mid + 6, y: 1))
+        cone.addLine(to: CGPoint(x: mid + 1, y: size.height - 1)); cone.addLine(to: CGPoint(x: mid - 1, y: size.height - 1))
+        cone.closeSubpath()
+        c.addPath(cone); c.setFillColor(cg("F3F6FA", 0.92)); c.fillPath()
+        c.setFillColor(cg(hex, 0.95)); c.fillEllipse(in: CGRect(x: mid - 2, y: size.height - 9, width: 4, height: 4))
+        c.addPath(cone); c.setStrokeColor(cg("5F6B7C", 0.85)); c.setLineWidth(0.9); c.strokePath()
+    }
+
+    /// A small lidded waste bin with an orange band.
+    private static func drawBin(_ c: CGContext) {
+        let line = cg("5F6B7C", 0.9)
+        let can = CGMutablePath()
+        can.move(to: CGPoint(x: 4, y: 7)); can.addLine(to: CGPoint(x: 22, y: 7)); can.addLine(to: CGPoint(x: 20, y: 25)); can.addLine(to: CGPoint(x: 6, y: 25)); can.closeSubpath()
+        c.addPath(can); c.setFillColor(cg("E6EBF1")); c.fillPath()
+        c.setFillColor(cg("F08A24")); c.fill(CGRect(x: 5, y: 13, width: 16, height: 4))
+        c.addPath(can); c.setStrokeColor(line); c.setLineWidth(1); c.strokePath()
+        let lid = CGRect(x: 2, y: 3, width: 22, height: 4)
+        c.addPath(CGPath(roundedRect: lid, cornerWidth: 2, cornerHeight: 2, transform: nil)); c.setFillColor(cg("C9D2DE")); c.fillPath()
+        c.addPath(CGPath(roundedRect: lid, cornerWidth: 2, cornerHeight: 2, transform: nil)); c.setStrokeColor(line); c.strokePath()
+    }
+
+    /// A membrane round the source card that stretches over the new card, pinches in the middle and splits:
+    /// a duplicated stain divides like a cell.
+    func divide(from a: CGRect, to b: CGRect, hex: String) {
+        guard a.width > 0, b.width > 0 else { return }
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let r: CGFloat = 12
+        let a = a.insetBy(dx: -3, dy: -3), b = b.insetBy(dx: -3, dy: -3)
+        func shape(_ lower: CGRect, neck: CGFloat) -> CGPath {
+            let mid = a.midX, gapY = (a.maxY + lower.minY) / 2
+            let p = CGMutablePath()
+            p.move(to: CGPoint(x: a.minX + r, y: a.minY))
+            p.addLine(to: CGPoint(x: a.maxX - r, y: a.minY)); p.addQuadCurve(to: CGPoint(x: a.maxX, y: a.minY + r), control: CGPoint(x: a.maxX, y: a.minY))
+            p.addLine(to: CGPoint(x: a.maxX, y: a.maxY - r)); p.addQuadCurve(to: CGPoint(x: a.maxX - r, y: a.maxY), control: CGPoint(x: a.maxX, y: a.maxY))
+            p.addLine(to: CGPoint(x: mid + neck / 2, y: a.maxY))
+            p.addQuadCurve(to: CGPoint(x: mid + neck / 2, y: lower.minY), control: CGPoint(x: mid + neck * 0.3, y: gapY))
+            p.addLine(to: CGPoint(x: lower.maxX - r, y: lower.minY)); p.addQuadCurve(to: CGPoint(x: lower.maxX, y: lower.minY + r), control: CGPoint(x: lower.maxX, y: lower.minY))
+            p.addLine(to: CGPoint(x: lower.maxX, y: lower.maxY - r)); p.addQuadCurve(to: CGPoint(x: lower.maxX - r, y: lower.maxY), control: CGPoint(x: lower.maxX, y: lower.maxY))
+            p.addLine(to: CGPoint(x: lower.minX + r, y: lower.maxY)); p.addQuadCurve(to: CGPoint(x: lower.minX, y: lower.maxY - r), control: CGPoint(x: lower.minX, y: lower.maxY))
+            p.addLine(to: CGPoint(x: lower.minX, y: lower.minY + r)); p.addQuadCurve(to: CGPoint(x: lower.minX + r, y: lower.minY), control: CGPoint(x: lower.minX, y: lower.minY))
+            p.addLine(to: CGPoint(x: mid - neck / 2, y: lower.minY))
+            p.addQuadCurve(to: CGPoint(x: mid - neck / 2, y: a.maxY), control: CGPoint(x: mid - neck * 0.3, y: gapY))
+            p.addLine(to: CGPoint(x: a.minX + r, y: a.maxY)); p.addQuadCurve(to: CGPoint(x: a.minX, y: a.maxY - r), control: CGPoint(x: a.minX, y: a.maxY))
+            p.addLine(to: CGPoint(x: a.minX, y: a.minY + r)); p.addQuadCurve(to: CGPoint(x: a.minX + r, y: a.minY), control: CGPoint(x: a.minX, y: a.minY))
+            p.closeSubpath()
+            return p
+        }
+        let tucked = CGRect(x: a.minX, y: a.maxY - 2 * r - 1, width: a.width, height: 2 * r)
+        let full = a.width - 2 * r
+        let m = CAShapeLayer()
+        m.fillColor = cg(hex, 0.12)
+        m.strokeColor = cg(hex, 0.95)
+        m.lineWidth = 2.2
+        m.shadowColor = cg(hex)
+        m.shadowRadius = 6
+        m.shadowOpacity = 0.6
+        m.shadowOffset = .zero
+        m.path = shape(b, neck: 0)
+        m.zPosition = 40
+        m.opacity = 0
+        root.addSublayer(m)
+        let d = 1.35
+        let morph = CAKeyframeAnimation(keyPath: "path")
+        morph.values = [shape(tucked, neck: full), shape(b, neck: full), shape(b, neck: full * 0.25), shape(b, neck: 0)]
+        morph.keyTimes = [0, 0.35, 0.65, 0.85]
+        morph.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: 3)
+        morph.duration = d
+        let g = CAAnimationGroup()
+        g.animations = [morph, frames("opacity", [0, 1, 1, 0], [0, 0.1, 0.8, 1], d)]
+        g.duration = d
+        m.run(g, "divide")
+        expire(m, after: d + 0.05)
+    }
+
+    /// A removed stain's card bursts like a lysed cell: its membrane breaks and droplets drift away and fade.
+    func lyse(_ card: CGRect, hex: String) {
+        guard card.width > 0 else { return }
+        let root = space
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let m = CAShapeLayer()
+        m.path = CGPath(roundedRect: CGRect(origin: .zero, size: card.size), cornerWidth: 10, cornerHeight: 10, transform: nil)
+        m.bounds = CGRect(origin: .zero, size: card.size)
+        m.position = CGPoint(x: card.midX, y: card.midY)
+        m.fillColor = nil
+        m.strokeColor = cg(hex, 0.9)
+        m.lineWidth = 2
+        m.lineDashPattern = [14, 6]
+        m.zPosition = 40
+        m.opacity = 0
+        root.addSublayer(m)
+        let g = CAAnimationGroup()
+        g.animations = [frames("transform.scale", [1, 1.04], [0, 1], 0.45, .easeOut), frames("opacity", [1, 0], [0, 1], 0.45),
+                        frames("lineDashPhase", [0, 30], [0, 1], 0.45)]
+        g.duration = 0.45
+        m.run(g, "burst")
+        expire(m, after: 0.5)
+        let c = CGPoint(x: card.midX, y: card.midY)
+        for k in 0..<28 {
+            let p = CGPoint(x: card.minX + card.width * CGFloat(hash01(k, 501)), y: card.minY + card.height * CGFloat(hash01(k, 502)))
+            let rad = 2.5 + 5 * CGFloat(hash01(k, 503))
+            let dot = CALayer()
+            dot.bounds = CGRect(x: 0, y: 0, width: 2 * rad, height: 2 * rad)
+            dot.cornerRadius = rad
+            dot.backgroundColor = cg(hex, 0.75)
+            dot.position = p
+            dot.zPosition = 40
+            dot.opacity = 0
+            root.addSublayer(dot)
+            let away = CGPoint(x: p.x + (p.x - c.x) * 0.25 + CGFloat(hash01(k, 504) - 0.5) * 30, y: p.y + (p.y - c.y) * 0.25 - 10 * CGFloat(hash01(k, 505)))
+            let life = 0.6 + 0.35 * hash01(k, 506)
+            let dg = CAAnimationGroup()
+            dg.animations = [frames("position", [NSValue(point: p), NSValue(point: away)], [0, 1], life, .easeOut),
+                             frames("transform.scale", [0.4, 1, 0.3], [0, 0.3, 1], life),
+                             frames("opacity", [0, 0.9, 0], [0, 0.2, 1], life)]
+            dg.duration = life
+            dot.run(dg, "drift", delay: 0.05 * hash01(k, 507))
+            expire(dot, after: life + 0.12)
+        }
     }
 }

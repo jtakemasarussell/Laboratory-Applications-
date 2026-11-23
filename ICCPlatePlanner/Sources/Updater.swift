@@ -19,6 +19,8 @@ struct ReleaseInfo {
     let asset: URL
     let size: Int
     let sha256: String?
+    /// Marked "[required]" in its title or notes: installed without asking.
+    var required = false
 }
 
 private struct GHRelease: Decodable {
@@ -75,12 +77,28 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
     // MARK: Checking
 
-    /// Once a day, a few seconds after launch, if automatic checks are on.
+    /// A few seconds after launch, then every hour while the app is open and whenever it comes to the front
+    /// (at most every 15 minutes), if automatic checks are on: a new release reaches every open copy within the
+    /// hour. GitHub allows 60 of these an hour from one network, so this stays far inside it.
     func checkAtLaunch() {
         guard Self.automatic, feedURL != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.checkIfDue(minutes: 0) }
+        hourly?.invalidate()
+        hourly = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkIfDue(minutes: 50) }
+        if front == nil {
+            front = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.checkIfDue(minutes: 15)
+            }
+        }
+    }
+    private var hourly: Timer?
+    private var front: NSObjectProtocol?
+
+    private func checkIfDue(minutes: Double) {
+        guard Self.automatic else { return }
         let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
-        guard testFeed != nil || Date().timeIntervalSince1970 - last > 20 * 3600 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.check(userInitiated: false) }
+        guard testFeed != nil || Date().timeIntervalSince1970 - last >= minutes * 60 else { return }
+        check(userInitiated: false)
     }
 
     /// Asks GitHub for the latest release. Automatic checks stay silent unless there is something new.
@@ -132,7 +150,8 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
             if userInitiated { inform("You're up to date", "ICC Plate Planner \(currentVersion) is the newest version.") }
             return
         }
-        if !userInitiated, UserDefaults.standard.string(forKey: "skippedUpdateVersion") == version { return }
+        let required = ((rel.name ?? "") + " " + (rel.body ?? "")).lowercased().contains("[required]")
+        if !userInitiated, !required, UserDefaults.standard.string(forKey: "skippedUpdateVersion") == version { return }
         let zips = rel.assets.filter { $0.name.lowercased().hasSuffix(".zip") }
         guard let asset = zips.first(where: { $0.name.lowercased().contains("icc") }),
               let assetURL = URL(string: asset.browser_download_url) else {
@@ -141,8 +160,10 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         }
         var sha: String? = nil
         if let d = asset.digest, d.lowercased().hasPrefix("sha256:") { sha = String(d.dropFirst(7)).lowercased() }
-        let info = ReleaseInfo(version: version, title: rel.name ?? "ICC Plate Planner \(version)", notes: rel.body ?? "",
+        var info = ReleaseInfo(version: version, title: rel.name ?? "ICC Plate Planner \(version)", notes: rel.body ?? "",
                                page: rel.html_url.flatMap(URL.init(string:)), asset: assetURL, size: asset.size, sha256: sha)
+        info.required = required
+        if required && !userInitiated { installRequired(info); return }
         offer(info)
     }
 
@@ -203,6 +224,16 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
         case .alertThirdButtonReturn: UserDefaults.standard.set(r.version, forKey: "skippedUpdateVersion")
         default: break
         }
+    }
+
+    /// A required release installs without asking, but never under someone's typing: it waits until no text
+    /// field is being edited. The plate is saved as the app quits and comes back after the relaunch.
+    private func installRequired(_ r: ReleaseInfo) {
+        if NSApp.keyWindow?.firstResponder is NSText {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { self.installRequired(r) }
+            return
+        }
+        download(r)
     }
 
     // MARK: Download

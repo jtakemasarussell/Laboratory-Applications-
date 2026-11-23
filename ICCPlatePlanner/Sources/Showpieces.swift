@@ -707,3 +707,213 @@ final class MixTubeView: NSView {
         }
     }
 }
+
+// MARK: - Cold mist from the fridge buttons
+
+/// Cold air spilling out of a fridge: a few faint, pale-blue wisps that sink from behind the button, spread
+/// and fade, over and over. Looping layers the window server runs; stopped in the background or with
+/// Animations off.
+struct ColdMist: NSViewRepresentable {
+    let alive: Bool
+    func makeNSView(context: Context) -> ColdMistView { ColdMistView(frame: .zero) }
+    func updateNSView(_ v: ColdMistView, context: Context) { v.set(alive: alive) }
+}
+
+final class ColdMistView: NSView {
+    private let space = CALayer()
+    private var wisps: [CALayer] = []
+    private var alive = false
+    private var laidOut = CGSize.zero
+    /// One wisp: pale on the dark room's navy, a deeper icy blue so it still shows on a white card.
+    private static func wisp(dark: Bool) -> CGImage? {
+        renderImage(CGSize(width: 60, height: 30), screenScale) { c in
+            c.scaleBy(x: 1, y: 0.5)
+            let space = CGColorSpace(name: CGColorSpace.sRGB)!
+            let core = dark ? cg("CFE7FB", 0.85) : cg("8EC3EE", 0.8), edge = dark ? cg("D8ECFC", 0.35) : cg("A9D2F3", 0.32)
+            if let g = CGGradient(colorsSpace: space, colors: [core, edge, cg("D8ECFC", 0)] as CFArray, locations: [0, 0.5, 1]) {
+                c.drawRadialGradient(g, startCenter: CGPoint(x: 30, y: 30), startRadius: 0, endCenter: CGPoint(x: 30, y: 30), endRadius: 30, options: [])
+            }
+        }
+    }
+    private static let wisps = (light: wisp(dark: false), dark: wisp(dark: true))
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        layer = CALayer()
+        wantsLayer = true
+        space.isGeometryFlipped = true
+        layer?.addSublayer(space)
+        for _ in 0..<3 {
+            let w = CALayer()
+            w.bounds = CGRect(x: 0, y: 0, width: 60, height: 30)
+            w.contents = Theme.dark ? Self.wisps.dark : Self.wisps.light
+            w.opacity = 0
+            space.addSublayer(w)
+            wisps.append(w)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); restart() }
+
+    func set(alive: Bool) {
+        guard alive != self.alive else { return }
+        self.alive = alive
+        restart()
+    }
+
+    private func restart() {
+        let size = bounds.size
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        space.frame = bounds
+        for w in wisps { w.removeAllAnimations() }
+        guard alive, size.width > 20, size.height > 10 else { return }
+        laidOut = size
+        for (k, w) in wisps.enumerated() {
+            let x = size.width * CGFloat(0.2 + 0.3 * Double(k)), y = size.height * 0.72
+            w.position = CGPoint(x: x, y: y)
+            let life = 3.4 + 0.6 * Double(k)
+            let g = CAAnimationGroup()
+            g.animations = [frames("position", [NSValue(point: CGPoint(x: x, y: y)), NSValue(point: CGPoint(x: x + CGFloat(k - 1) * 10, y: y + 12))], [0, 1], life, .easeOut),
+                            frames("transform.scale", [0.5, 1.5], [0, 1], life, .easeOut),
+                            frames("opacity", [0, 0.75, 0], [0, 0.3, 1], life)]
+            g.duration = life
+            g.repeatCount = .infinity
+            g.beginTime = CACurrentMediaTime() + Double(k) * 1.15
+            g.fillMode = .backwards
+            w.add(g, forKey: "mist")
+        }
+    }
+}
+
+// MARK: - The live Dock icon
+
+/// The app's Dock icon with a miniature of the plate in its stain colours; while an export scans, a bar under
+/// the plate fills with its progress. Redrawn only after changes settle, and only when the progress moves.
+final class DockPlate {
+    static let shared = DockPlate()
+    private var cells: [String?] = Array(repeating: nil, count: 96)
+    private var progress: Double?
+    private var work: DispatchWorkItem?
+
+    func update(_ store: Store) {
+        work?.cancel()
+        let w = DispatchWorkItem { [weak store] in
+            guard let store else { return }
+            let ids = store.exp.sets.map { $0.id }
+            self.cells = (0..<96).map { w in
+                store.exp.wells[w].flatMap { id in ids.firstIndex(of: id) }.map { fillHex(store.exp.sets[$0], $0) }
+            }
+            self.draw()
+        }
+        work = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: w)
+    }
+
+    func setProgress(_ p: Double?) {
+        if let p, let q = progress, abs(p - q) < 0.04, p < 1 { return }
+        if p == nil && progress == nil { return }
+        progress = p
+        draw()
+    }
+
+    private func draw() {
+        guard let img = picture() else { return }
+        let v = NSImageView(image: img)
+        NSApp.dockTile.contentView = v
+        NSApp.dockTile.display()
+    }
+
+    /// The icon as it is drawn into the Dock.
+    func picture() -> NSImage? {
+        guard let icon = NSApp.applicationIconImage else { return nil }
+        let cells = self.cells, progress = self.progress
+        return NSImage(size: NSSize(width: 256, height: 256), flipped: true) { r in
+            icon.draw(in: r)
+            // the plate, lower right
+            let plate = NSRect(x: 100, y: 132, width: 146, height: 104)
+            NSColor(white: 0, alpha: 0.35).setFill()
+            NSBezierPath(roundedRect: plate.offsetBy(dx: 0, dy: 3), xRadius: 12, yRadius: 12).fill()
+            NSColor(hex: "1A222D").setFill()
+            NSBezierPath(roundedRect: plate, xRadius: 12, yRadius: 12).fill()
+            NSColor(white: 1, alpha: 0.25).setStroke()
+            let rim = NSBezierPath(roundedRect: plate.insetBy(dx: 1, dy: 1), xRadius: 11, yRadius: 11); rim.lineWidth = 2; rim.stroke()
+            let inner = plate.insetBy(dx: 9, dy: progress == nil ? 9 : 7)
+            let cw = inner.width / 12, ch = (inner.height - (progress == nil ? 0 : 10)) / 8
+            for w in 0..<96 {
+                let cell = NSRect(x: inner.minX + CGFloat(w % 12) * cw + 1, y: inner.minY + CGFloat(w / 12) * ch + 1, width: cw - 2, height: ch - 2)
+                if let hex = cells[w] { NSColor(hex: hex).setFill() } else { NSColor(hex: "2C3846").setFill() }
+                NSBezierPath(roundedRect: cell, xRadius: 2, yRadius: 2).fill()
+            }
+            if let p = progress {
+                let track = NSRect(x: inner.minX, y: inner.maxY - 6, width: inner.width, height: 5)
+                NSColor(white: 1, alpha: 0.2).setFill(); NSBezierPath(roundedRect: track, xRadius: 2.5, yRadius: 2.5).fill()
+                NSColor(hex: "5BE38A").setFill()
+                NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: track.width * CGFloat(max(0.04, min(1, p))), height: track.height),
+                             xRadius: 2.5, yRadius: 2.5).fill()
+            }
+            return true
+        }
+    }
+
+    /// Development: the cells straight from a store, without waiting.
+    func load(_ store: Store) {
+        let ids = store.exp.sets.map { $0.id }
+        cells = (0..<96).map { w in store.exp.wells[w].flatMap { id in ids.firstIndex(of: id) }.map { fillHex(store.exp.sets[$0], $0) } }
+    }
+    func devProgress(_ p: Double?) { progress = p }
+}
+
+// MARK: - The workbook flies to the Dock
+
+/// When the export finishes, the workbook's icon arcs out of the export window and down into the Dock, the way
+/// a download does. A see-through window over the screen carries it for a second.
+enum FileFlight {
+    private static var overlay: NSWindow?
+
+    static func play(from window: NSWindow?, file: URL) {
+        guard let window, let screen = window.screen ?? NSScreen.main else { return }
+        let sf = screen.frame, vf = screen.visibleFrame
+        // where the Dock is: the side of the screen the visible area stops short of
+        let target: CGPoint
+        if vf.minX - sf.minX > 4 { target = CGPoint(x: sf.minX + (vf.minX - sf.minX) / 2, y: sf.midY) }
+        else if sf.maxX - vf.maxX > 4 { target = CGPoint(x: sf.maxX - (sf.maxX - vf.maxX) / 2, y: sf.midY) }
+        else { target = CGPoint(x: sf.midX, y: sf.minY + max(24, (vf.minY - sf.minY) / 2)) }
+        let start = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        overlay?.orderOut(nil)
+        let w = NSWindow(contentRect: sf, styleMask: .borderless, backing: .buffered, defer: false)
+        w.isOpaque = false; w.backgroundColor = .clear; w.ignoresMouseEvents = true; w.hasShadow = false
+        w.level = .statusBar
+        w.isReleasedWhenClosed = false
+        let v = NSView(frame: NSRect(origin: .zero, size: sf.size))
+        v.layer = CALayer(); v.wantsLayer = true
+        w.contentView = v
+        w.orderFrontRegardless()
+        overlay = w
+        let icon = CALayer()
+        icon.bounds = CGRect(x: 0, y: 0, width: 72, height: 72)
+        let img = NSWorkspace.shared.icon(forFile: file.path)
+        icon.contents = img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let a = CGPoint(x: start.x - sf.minX, y: start.y - sf.minY), b = CGPoint(x: target.x - sf.minX, y: target.y - sf.minY)
+        icon.position = b
+        icon.opacity = 0
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        v.layer?.addSublayer(icon)
+        CATransaction.commit()
+        let path = CGMutablePath()
+        path.move(to: a)
+        path.addQuadCurve(to: b, control: CGPoint(x: (a.x + b.x) / 2, y: max(a.y, b.y) + 160))
+        let fly = CAKeyframeAnimation(keyPath: "position")
+        fly.path = path
+        fly.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        let g = CAAnimationGroup()
+        g.animations = [fly, frames("transform.scale", [0.6, 1.15, 0.35], [0, 0.25, 1], 0.95), frames("opacity", [0, 1, 1, 0], [0, 0.12, 0.85, 1], 0.95)]
+        g.duration = 0.95
+        icon.run(g, "fly", delay: 0.15)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25) {
+            guard overlay === w else { return }
+            w.orderOut(nil); overlay = nil
+        }
+    }
+}
